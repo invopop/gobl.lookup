@@ -59,7 +59,7 @@ Deploy behind a reverse proxy that handles TLS termination.`,
 				slog.Info("GOBL Lookup listening",
 					"addr", addr,
 					"domain", string(setup.Identity().Address()),
-					"public_base_url", cfg.PublicBaseURL,
+					"public_base_url", setup.PublicBaseURL(),
 					"couchdb", cfg.CouchDBRedacted(),
 				)
 				errCh <- srv.ListenAndServe()

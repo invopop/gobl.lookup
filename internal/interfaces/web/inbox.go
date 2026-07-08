@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,8 +20,15 @@ import (
 // as the record is persisted.
 func handleInbox(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(io.LimitReader(r.Body, inboxMaxBody))
+		r.Body = http.MaxBytesReader(w, r.Body, inboxMaxBody)
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				log.Warn("inbox.rejected", "reason", "body_too_large", "remote", r.RemoteAddr)
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
 			log.Warn("inbox.rejected", "reason", "read_body", "remote", r.RemoteAddr, "error", err.Error())
 			http.Error(w, "could not read body", http.StatusBadRequest)
 			return

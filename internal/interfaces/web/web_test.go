@@ -232,6 +232,14 @@ func TestInboxRejectsNonPartyDocument(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
 }
 
+func TestInboxRejectsOversizedBody(t *testing.T) {
+	f := newFixture(t)
+	// Larger than the handler's 1 MiB cap → rejected, not truncated.
+	resp := f.post(goblnet.InboxPath, bytes.Repeat([]byte("a"), (1<<20)+1024))
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+}
+
 func TestInboxRejectsMalformedJSON(t *testing.T) {
 	f := newFixture(t)
 	resp := f.post(goblnet.InboxPath, []byte("not json"))

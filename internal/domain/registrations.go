@@ -125,8 +125,11 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	)
 
 	// Fire-and-forget delivery: the caller is acknowledged as soon
-	// as we've persisted; the actual /inbox POST is done async.
-	go d.deliverAsync(sender, env, rec)
+	// as we've persisted; the actual /inbox POST is done async. The
+	// goroutine mutates its record (attempts/status), so hand it a copy
+	// — the record returned to the caller stays immutable after return.
+	recCopy := *rec
+	go d.deliverAsync(sender, env, &recCopy)
 
 	return rec, nil
 }

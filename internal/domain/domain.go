@@ -54,6 +54,7 @@ type Deps struct {
 type Setup struct {
 	identity      *Identity
 	registrations *Registrations
+	publicBaseURL string
 }
 
 // New prepares the domain setup from its constructed dependencies.
@@ -63,7 +64,14 @@ func New(d Deps) *Setup {
 	}
 	s := new(Setup)
 	s.identity = newIdentity(d.Identity, d.Client, d.Logger)
-	s.registrations = newRegistrations(d.Registrations, s.identity, d.Client, d.Sender, d.PublicBaseURL, d.Logger)
+	// Resolve the effective public base URL here (defaulting to
+	// https://<domain>) so both the domain and callers observe the same
+	// value — the empty case is not visible downstream.
+	s.publicBaseURL = d.PublicBaseURL
+	if s.publicBaseURL == "" {
+		s.publicBaseURL = "https://" + string(s.identity.Address())
+	}
+	s.registrations = newRegistrations(d.Registrations, s.identity, d.Client, d.Sender, s.publicBaseURL, d.Logger)
 	return s
 }
 
@@ -72,3 +80,7 @@ func (s *Setup) Identity() *Identity { return s.identity }
 
 // Registrations returns the registrations domain service.
 func (s *Setup) Registrations() *Registrations { return s.registrations }
+
+// PublicBaseURL returns the effective canonical URL used for discovery
+// links — the configured value, or https://<domain> when unset.
+func (s *Setup) PublicBaseURL() string { return s.publicBaseURL }

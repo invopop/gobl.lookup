@@ -37,17 +37,13 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 		return nil, nil, gobl.ErrInternal.WithCause(err)
 	}
 
-	base := strings.TrimRight(cfg.PublicBaseURL, "/")
-	if base == "" {
-		base = "https://" + string(id.Address())
-	}
-
 	setup := domain.New(domain.Deps{
 		Identity:      id,
 		Registrations: reg,
 		Client:        goblnet.NewClient(),
 		Sender:        delivery.New(),
-		PublicBaseURL: base,
+		// domain.New defaults this to https://<domain> when empty.
+		PublicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"),
 		Logger:        slog.Default(),
 	})
 	cleanup := func() { _ = reg.Close() }
