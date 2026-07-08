@@ -1,4 +1,4 @@
-package server
+package web
 
 import (
 	"log/slog"
@@ -8,8 +8,7 @@ import (
 
 // withAccessLog logs one entry per request after the handler
 // returns. Handler-specific logs (inbox.accepted, who.exchange,
-// etc.) are layered on top of this baseline by the individual
-// handlers.
+// etc.) are emitted by the domain services on top of this baseline.
 func withAccessLog(log *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

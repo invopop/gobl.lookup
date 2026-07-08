@@ -11,7 +11,7 @@ import (
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.lookup/internal/identity"
+	"github.com/invopop/gobl.lookup/internal/domain/repos"
 )
 
 type initOpts struct {
@@ -46,7 +46,7 @@ After init, run "gobl.lookup serve" pointing at the same
 			if dir == "" {
 				dir = defaultConfigDir(string(domain))
 			}
-			id, err := identity.Init(identity.ScaffoldOptions{
+			id, err := repos.InitIdentity(repos.ScaffoldOptions{
 				Domain:    domain,
 				ConfigDir: dir,
 				Force:     opts.force,

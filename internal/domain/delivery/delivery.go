@@ -27,10 +27,9 @@ import (
 const (
 	defaultTimeout = 10 * time.Second
 	dialTimeout    = 5 * time.Second
-	maxBodySize    = 1 << 20 // 1 MiB
 )
 
-// Errors returned by Sender.Send.
+// Errors returned by Send.
 var (
 	// ErrInboxRejected matches gobl/net's sentinel — the remote
 	// /inbox returned anything other than 202.
@@ -39,20 +38,28 @@ var (
 	ErrSendFailed = errors.New("delivery: send failed")
 )
 
-// Sender posts envelopes to remote GOBL Net inboxes. Construct
-// with NewSender; the zero value is not usable.
-type Sender struct {
+// Sender posts a countersigned envelope to a remote GOBL Net inbox.
+// The domain depends on this interface; HTTPSender is the production
+// implementation and tests substitute their own.
+type Sender interface {
+	Send(ctx context.Context, addr net.Address, env *gobl.Envelope) error
+}
+
+// HTTPSender is the HTTP implementation of Sender. Construct with New;
+// the zero value is not usable.
+type HTTPSender struct {
 	client *http.Client
 }
 
-// NewSender returns a Sender whose transport refuses to dial any
+// New returns an HTTPSender whose transport refuses to dial any
 // resolved IP that is loopback, private, link-local, multicast, or
-// unspecified. allowLoopback bypasses the guard; intended for
-// tests that talk to httptest servers bound to 127.0.0.1. There is
-// no public wrapper that exposes allowLoopback.
-func NewSender() *Sender { return newSender(false) }
+// unspecified.
+func New() *HTTPSender { return newSender(false) }
 
-func newSender(allowLoopback bool) *Sender {
+// newSender builds an HTTPSender; allowLoopback bypasses the SSRF
+// guard, intended only for tests that talk to httptest servers bound
+// to 127.0.0.1. There is no public wrapper that exposes it.
+func newSender(allowLoopback bool) *HTTPSender {
 	transport := &http.Transport{
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          50,
@@ -63,7 +70,7 @@ func newSender(allowLoopback bool) *Sender {
 	if !allowLoopback {
 		transport.DialContext = safeDialContext
 	}
-	return &Sender{
+	return &HTTPSender{
 		client: &http.Client{
 			Timeout:   defaultTimeout,
 			Transport: transport,
@@ -74,7 +81,7 @@ func newSender(allowLoopback bool) *Sender {
 // Send posts env to the remote address's /inbox URL. The host
 // (derived from net.Address.InboxURL) MUST resolve to a public IP
 // (see SSRF defense above).
-func (s *Sender) Send(ctx context.Context, addr net.Address, env *gobl.Envelope) error {
+func (s *HTTPSender) Send(ctx context.Context, addr net.Address, env *gobl.Envelope) error {
 	if env == nil {
 		return fmt.Errorf("%w: envelope is nil", ErrSendFailed)
 	}
@@ -103,9 +110,9 @@ func (s *Sender) Send(ctx context.Context, addr net.Address, env *gobl.Envelope)
 	return nil
 }
 
-// safeDialContext is the DialContext used by the default Sender's
-// transport. Duplicates gobl/net/client.go's logic — see the
-// package doc for why.
+// safeDialContext is the DialContext used by the default HTTPSender's
+// transport. Duplicates gobl/net/client.go's logic — see the package
+// doc for why.
 func safeDialContext(ctx context.Context, network, addr string) (stdnet.Conn, error) {
 	host, port, err := stdnet.SplitHostPort(addr)
 	if err != nil {

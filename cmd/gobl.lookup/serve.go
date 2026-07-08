@@ -5,37 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
-	kivik "github.com/go-kivik/kivik/v4"
-	_ "github.com/go-kivik/kivik/v4/couchdb"
 	"github.com/spf13/cobra"
 
 	"github.com/invopop/gobl"
-	goblnet "github.com/invopop/gobl/net"
 
-	"github.com/invopop/gobl.lookup/internal/delivery"
-	"github.com/invopop/gobl.lookup/internal/identity"
-	"github.com/invopop/gobl.lookup/internal/registry"
-	"github.com/invopop/gobl.lookup/internal/server"
+	"github.com/invopop/gobl.lookup/internal/config"
+	"github.com/invopop/gobl.lookup/internal/interfaces/web"
 )
 
-type serveOpts struct {
-	configDir       string
-	couchURL        string
-	couchDB         string
-	httpPort        int
-	publicBaseURL   string
-	shutdownTimeout time.Duration
-}
-
 func serveCmd() *cobra.Command {
-	opts := &serveOpts{
-		couchDB:         "gobl-lookup",
-		httpPort:        80,
-		shutdownTimeout: 10 * time.Second,
-	}
+	cfg := config.FromEnv()
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start the lookup HTTP server",
@@ -44,49 +25,29 @@ func serveCmd() *cobra.Command {
 well-known endpoints plus /parties/<key> for public record
 lookups.
 
+Configuration is read from the environment (CONFIG_DIR, COUCHDB_*,
+PUBLIC_BASE_URL, HTTP_PORT/PORT); the flags below override it.
+
 NOTE: This v1 binary terminates HTTP only (no built-in TLS).
 Deploy behind a reverse proxy that handles TLS termination.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if opts.configDir == "" {
-				return gobl.ErrInput.WithReason("--config-dir is required")
+			if cfg.ConfigDir == "" {
+				return gobl.ErrInput.WithReason("identity directory required: set --config-dir or CONFIG_DIR")
 			}
-			if opts.couchURL == "" {
-				return gobl.ErrInput.WithReason("--couchdb is required")
+			if cfg.CouchDBURL() == "" {
+				return gobl.ErrInput.WithReason("CouchDB connection required: set --couchdb / COUCHDB_URL, or COUCHDB_HOST (+ COUCHDB_USERNAME / COUCHDB_PASSWORD)")
 			}
 			ctx := cmd.Context()
 
-			id, err := identity.Load(opts.configDir)
+			setup, cleanup, err := buildDomain(ctx, cfg)
 			if err != nil {
-				return gobl.ErrInternal.WithCause(err)
+				return err
 			}
+			defer cleanup()
 
-			client, err := kivik.New("couch", opts.couchURL)
-			if err != nil {
-				return gobl.ErrInternal.WithCause(fmt.Errorf("couchdb client: %w", err))
-			}
-			reg, err := registry.NewCouchStore(ctx, client, opts.couchDB)
-			if err != nil {
-				return gobl.ErrInternal.WithCause(err)
-			}
-			defer reg.Close() //nolint:errcheck
+			mux := web.NewMux(setup, slog.Default())
 
-			netClient := goblnet.NewClient()
-			sender := delivery.NewSender()
-
-			base := strings.TrimRight(opts.publicBaseURL, "/")
-			if base == "" {
-				base = "https://" + string(id.Address())
-			}
-			mux := server.NewMux(server.Deps{
-				Identity:      id,
-				Registry:      reg,
-				Client:        netClient,
-				Sender:        sender,
-				Logger:        slog.Default(),
-				PublicBaseURL: base,
-			})
-
-			addr := fmt.Sprintf(":%d", opts.httpPort)
+			addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 			srv := &http.Server{
 				Addr:              addr,
 				Handler:           mux,
@@ -97,9 +58,9 @@ Deploy behind a reverse proxy that handles TLS termination.`,
 			go func() {
 				slog.Info("GOBL Lookup listening",
 					"addr", addr,
-					"domain", string(id.Address()),
-					"public_base_url", base,
-					"couchdb", opts.couchURL,
+					"domain", string(setup.Identity().Address()),
+					"public_base_url", cfg.PublicBaseURL,
+					"couchdb", cfg.CouchDBRedacted(),
 				)
 				errCh <- srv.ListenAndServe()
 			}()
@@ -111,7 +72,7 @@ Deploy behind a reverse proxy that handles TLS termination.`,
 				}
 				return nil
 			case <-ctx.Done():
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), opts.shutdownTimeout)
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 				defer cancel()
 				slog.Info("shutting down")
 				if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -121,10 +82,10 @@ Deploy behind a reverse proxy that handles TLS termination.`,
 			}
 		},
 	}
-	cmd.Flags().StringVar(&opts.configDir, "config-dir", "", "directory holding the lookup identity (private.jwk + party.json + keys/)")
-	cmd.Flags().StringVar(&opts.couchURL, "couchdb", "", "CouchDB URL, e.g. http://admin:pass@localhost:5984/")
-	cmd.Flags().StringVar(&opts.couchDB, "couchdb-database", opts.couchDB, "CouchDB database name (default \"gobl-lookup\")")
-	cmd.Flags().IntVar(&opts.httpPort, "http-port", opts.httpPort, "HTTP listen port")
-	cmd.Flags().StringVar(&opts.publicBaseURL, "public-base-url", "", "canonical https URL used to build /parties/<uuid> links (defaults to https://<domain>)")
+	cmd.Flags().StringVar(&cfg.ConfigDir, "config-dir", cfg.ConfigDir, "directory holding the lookup identity (env CONFIG_DIR)")
+	cmd.Flags().StringVar(&cfg.CouchURL, "couchdb", cfg.CouchURL, "full CouchDB URL, e.g. http://admin:pass@localhost:5984 (env COUCHDB_URL; overrides the COUCHDB_* parts)")
+	cmd.Flags().StringVar(&cfg.CouchDatabase, "couchdb-database", cfg.CouchDatabase, "CouchDB database name (env COUCHDB_DATABASE)")
+	cmd.Flags().IntVar(&cfg.HTTPPort, "http-port", cfg.HTTPPort, "HTTP listen port (env HTTP_PORT or PORT)")
+	cmd.Flags().StringVar(&cfg.PublicBaseURL, "public-base-url", cfg.PublicBaseURL, "canonical https URL used to build /parties/<uuid> links, defaults to https://<domain> (env PUBLIC_BASE_URL)")
 	return cmd
 }

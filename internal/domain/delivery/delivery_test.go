@@ -43,14 +43,9 @@ func TestSenderSend202(t *testing.T) {
 
 	// Build a Sender that talks to localhost (the SSRF guard would
 	// normally refuse). We use the same internal-only constructor
-	// trick gobl/net does for its tests.
+	// trick gobl/net does for its tests, then exercise the transport
+	// directly via a one-off request matching what Send constructs.
 	s := newSender(true)
-	// Override the URL by stubbing the http.Client at a known host.
-	// Easiest: call Send via a Sender whose transport dials the
-	// httptest URL directly via Host rewrite — but our public Send
-	// requires net.Address.InboxURL() which is https://.../inbox.
-	// Instead we exercise the transport directly via a one-off
-	// request matching what Send constructs.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+net.InboxPath, strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)
@@ -67,7 +62,7 @@ func TestSenderRejectsLoopbackByDefault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	s := NewSender()
+	s := New()
 	// httptest binds 127.0.0.1 — the default Sender MUST refuse.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+net.InboxPath, strings.NewReader(`{}`))
 	_, err := s.client.Do(req)
@@ -86,13 +81,13 @@ func TestSafeDialContextRejectsLoopback(t *testing.T) {
 }
 
 func TestSendNilEnvelope(t *testing.T) {
-	err := NewSender().Send(context.Background(), net.Address("alice.example"), nil)
+	err := New().Send(context.Background(), net.Address("alice.example"), nil)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrSendFailed))
 }
 
 func TestSendInvalidAddress(t *testing.T) {
-	err := NewSender().Send(context.Background(), net.Address("not a domain"), buildEnvelope(t))
+	err := New().Send(context.Background(), net.Address("not a domain"), buildEnvelope(t))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrSendFailed))
 }
@@ -103,7 +98,6 @@ func TestSendNon202ReturnsInboxRejected(t *testing.T) {
 	}))
 	defer srv.Close()
 	s := newSender(true)
-	// Direct request as in TestSenderSend202.
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+net.InboxPath, strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.client.Do(req)

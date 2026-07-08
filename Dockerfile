@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Multi-stage build mirroring gobl.dev/Dockerfile.
+# Multi-stage build: static, non-root image for running on Kubernetes.
 
 FROM golang:1.24-alpine AS builder
 
@@ -30,4 +30,6 @@ WORKDIR /home/gobl
 EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/gobl.lookup"]
-CMD ["serve", "--http-port", "8080"]
+# Port, CouchDB, identity dir, etc. all come from the environment
+# (see README "Configuration"); the listen port defaults to 8080.
+CMD ["serve"]

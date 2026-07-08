@@ -1,0 +1,19 @@
+name: Test Go
+on: [push]
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+
+      # No external services needed: the suite uses an in-memory registry,
+      # tempdir identities, and httptest — no live CouchDB.
+      - name: Test
+        run: go test -race ./...

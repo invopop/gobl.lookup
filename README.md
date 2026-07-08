@@ -32,6 +32,31 @@ Copyright 2026 [Invopop S.L.](https://invopop.com).
 No new protocol endpoints — registration uses the standard GOBL
 Net `/inbox` POST in both directions.
 
+## Architecture
+
+The code follows the standard Invopop layered layout (cf. `silo`,
+`access`):
+
+```
+internal/
+  config/            runtime configuration (populated from CLI flags)
+  domain/            business logic, orchestrated by domain.Setup
+    domain.go          Setup: wires repos + services together
+    identity.go        Identity service: countersign, /who exchange, keys
+    registrations.go   Registrations service: register, verify, find
+    errors.go          typed domain errors (mapped to HTTP statuses)
+    models/            data structures (Registration, Identity)
+    repos/             persistence (CouchDB + in-memory; identity loader)
+    delivery/          outbound Sender (HTTP POST to a subject's inbox)
+  interfaces/
+    web/             HTTP transport: thin handlers over domain.Setup
+cmd/gobl.lookup/     CLI (init / serve / verify / version)
+```
+
+Handlers in `interfaces/web` parse the request, delegate to a domain
+service, and translate `domain.Error` kinds into HTTP status codes.
+The domain never imports the transport layer.
+
 ## Endpoints
 
 | Method | Path                                | Purpose                                                  |
@@ -101,6 +126,31 @@ preserve the audit trail across re-registrations.
 The top-level `--json` flag switches operator logs from text to
 JSON on stderr.
 
+## Configuration
+
+`serve` and `verify` read their configuration from the environment
+(the mechanism the cluster uses to inject config and secrets); the
+equivalent flags override the environment for local use.
+
+| Env var             | Flag                 | Default       | Purpose                                                             |
+|---------------------|----------------------|---------------|--------------------------------------------------------------------|
+| `CONFIG_DIR`        | `--config-dir`       | —             | Directory holding the identity (`private.jwk` + `party.json` + `keys/`). |
+| `COUCHDB_URL`       | `--couchdb`          | —             | Full CouchDB URL. Overrides the split `COUCHDB_*` parts below.      |
+| `COUCHDB_SCHEME`    | —                    | `http`        | CouchDB scheme (used when `COUCHDB_URL` is unset).                  |
+| `COUCHDB_HOST`      | —                    | —             | CouchDB host, e.g. `couchdb-svc.default`.                           |
+| `COUCHDB_PORT`      | —                    | `5984`        | CouchDB port.                                                       |
+| `COUCHDB_USERNAME`  | —                    | `admin`       | CouchDB user.                                                       |
+| `COUCHDB_PASSWORD`  | —                    | —             | CouchDB password (inject from a secret).                           |
+| `COUCHDB_DATABASE`  | `--couchdb-database` | `gobl-lookup` | Database name.                                                      |
+| `HTTP_PORT`/`PORT`  | `--http-port`        | `8080`        | HTTP listen port (`HTTP_PORT` wins over `PORT`).                    |
+| `PUBLIC_BASE_URL`   | `--public-base-url`  | `https://<domain>` | Canonical URL for `/parties/<uuid>` discovery links.          |
+| `LOG_JSON`          | `--json`             | `false`       | Emit structured JSON logs on stderr.                               |
+
+Supply the CouchDB connection either as a single `COUCHDB_URL`
+(handy for local dev, e.g. `http://admin:pass@localhost:5984`) or via
+the split `COUCHDB_*` parts (the cluster convention, so the password
+arrives from a secret independently of the host).
+
 ## Operations
 
 - **Re-registration**: a fresh registration for an existing
@@ -118,9 +168,25 @@ JSON on stderr.
 
 ## Deployment
 
-The repo ships with a `Dockerfile` and a `fly.toml` mirroring the
-sibling `gobl.dev` shape. Fly deploys to the `gobl-lookup` app in
-the `cdg` region by default; adjust the toml for your environment.
+The repo ships with a `Dockerfile` producing a small, static,
+non-root image suitable for running on Kubernetes. Build and run it
+directly:
+
+```bash
+docker build -t gobl.lookup .
+docker run --rm -p 8080:8080 \
+    -v "$PWD/dev/lookup.local:/config:ro" \
+    -e CONFIG_DIR=/config \
+    -e COUCHDB_HOST=couchdb -e COUCHDB_USERNAME=admin -e COUCHDB_PASSWORD=pass \
+    -e PUBLIC_BASE_URL=https://lookup.example \
+    gobl.lookup serve
+```
+
+The server listens on `8080` by default (no `HTTP_PORT` needed).
+
+In a cluster, mount the identity (`private.jwk` + `party.json` +
+`keys/`) into `CONFIG_DIR` and inject the `COUCHDB_*` values (password
+from a secret) as environment variables — see [Configuration](#configuration).
 
 ## License
 

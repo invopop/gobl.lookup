@@ -1,4 +1,4 @@
-package server_test
+package web_test
 
 import (
 	"bytes"
@@ -21,13 +21,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/invopop/gobl.lookup/internal/identity"
-	"github.com/invopop/gobl.lookup/internal/registry"
-	"github.com/invopop/gobl.lookup/internal/server"
+	"github.com/invopop/gobl.lookup/internal/domain"
+	"github.com/invopop/gobl.lookup/internal/domain/models"
+	"github.com/invopop/gobl.lookup/internal/domain/repos"
+	"github.com/invopop/gobl.lookup/internal/interfaces/web"
 )
 
-// mockFetcher serves a map[url]bytes. Used by the goblnet.Client
-// the server uses to verify incoming envelopes.
+// mockFetcher serves a map[url]bytes. Used by the goblnet.Client the
+// domain uses to verify incoming envelopes.
 type mockFetcher struct {
 	data map[string][]byte
 }
@@ -39,8 +40,8 @@ func (m *mockFetcher) Fetch(_ context.Context, url string) ([]byte, error) {
 	return nil, goblnet.ErrFetchFailed
 }
 
-// mockSender records send attempts. By default it succeeds; set
-// `err` to make Send fail.
+// mockSender records send attempts. By default it succeeds; set `err`
+// to make Send fail.
 type mockSender struct {
 	mu   sync.Mutex
 	sent []sentEnvelope
@@ -71,15 +72,15 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-// fixture spins up a lookup identity in a tempdir + a registry +
-// a mock fetcher that serves the subject's published key. Returns
-// everything the inbox test needs to POST a registration.
+// fixture spins up a lookup identity in a tempdir + an in-memory
+// registry + a mock fetcher that serves the subject's published key.
+// Returns everything the inbox test needs to POST a registration.
 type fixture struct {
 	t        *testing.T
-	lookup   *identity.Identity
+	lookup   *models.Identity
 	subject  *dsig.PrivateKey
 	subAddr  goblnet.Address
-	registry *registry.MemoryStore
+	registry *repos.MemoryRegistrations
 	sender   *mockSender
 	mux      http.Handler
 }
@@ -87,7 +88,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	dir := t.TempDir()
-	lookup, err := identity.Init(identity.ScaffoldOptions{
+	lookup, err := repos.InitIdentity(repos.ScaffoldOptions{
 		Domain:    goblnet.Address("lookup.example"),
 		ConfigDir: dir,
 	})
@@ -101,22 +102,23 @@ func newFixture(t *testing.T) *fixture {
 		subAddr.KeyURL(subKey.ID()): pub,
 	}}
 	client := goblnet.NewClient(goblnet.WithFetcher(fetcher))
-	reg := registry.NewMemoryStore()
+	reg := repos.NewMemoryRegistrations()
 	send := &mockSender{}
 
-	mux := server.NewMux(server.Deps{
+	setup := domain.New(domain.Deps{
 		Identity:      lookup,
-		Registry:      reg,
+		Registrations: reg,
 		Client:        client,
 		Sender:        send,
-		Logger:        discardLogger(),
 		PublicBaseURL: "https://lookup.example",
+		Logger:        discardLogger(),
 	})
+	mux := web.NewMux(setup, discardLogger())
 	return &fixture{t: t, lookup: lookup, subject: subKey, subAddr: subAddr, registry: reg, sender: send, mux: mux}
 }
 
-// signPartyEnvelope builds a fresh signed envelope from subject
-// with the given iss/aud.
+// signPartyEnvelope builds a fresh signed envelope from subject with
+// the given iss/aud.
 func (f *fixture) signPartyEnvelope(iss, aud cbc.URI) *gobl.Envelope {
 	f.t.Helper()
 	party := &org.Party{
@@ -129,9 +131,9 @@ func (f *fixture) signPartyEnvelope(iss, aud cbc.URI) *gobl.Envelope {
 	return env
 }
 
-// waitForDelivery spins until the mock sender records something
-// or the deadline expires. The inbox handler delivers async via a
-// goroutine so the POST returns immediately.
+// waitForDelivery spins until the mock sender records something or the
+// deadline expires. The inbox handler delivers async so the POST
+// returns immediately.
 func (f *fixture) waitForDelivery(d time.Duration) []sentEnvelope {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
@@ -171,7 +173,7 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	// Record persisted with the Authority countersignature.
 	rec, err := f.registry.Get(context.Background(), f.subAddr)
 	require.NoError(t, err)
-	assert.Equal(t, registry.StatusCountersigned, rec.Status)
+	assert.Equal(t, models.StatusCountersigned, rec.Status)
 	assert.Equal(t, head.ScopeRegistered, rec.Scope)
 	require.NotNil(t, rec.CountersignedEnvelope)
 	require.Len(t, rec.CountersignedEnvelope.Signatures, 2,
@@ -219,8 +221,8 @@ func TestInboxRejectsWrongAud(t *testing.T) {
 
 func TestInboxRejectsNonPartyDocument(t *testing.T) {
 	f := newFixture(t)
-	// Sign a note message instead of a party.
-	msg := &org.Inbox{Code: "x"} // pick any non-Party doc registered in core
+	// Sign a non-party document instead of a party.
+	msg := &org.Inbox{Code: "x"}
 	env, err := gobl.Envelop(msg)
 	require.NoError(t, err)
 	require.NoError(t, env.Sign(f.subject, f.subAddr.URI(), f.lookup.URI()))
@@ -345,8 +347,6 @@ func TestJWKSEndpoint(t *testing.T) {
 
 func TestWhoExchange(t *testing.T) {
 	f := newFixture(t)
-	// Caller posts a signed envelope; we don't strictly need it to
-	// be a party for /who — any document works.
 	party := &org.Party{Name: "Alice", Endpoints: []*org.Endpoint{{URI: f.subAddr.URI()}}}
 	env, err := gobl.Envelop(party)
 	require.NoError(t, err)
@@ -375,12 +375,12 @@ func TestHealth(t *testing.T) {
 
 func TestAllowListBlocksUnknownSender(t *testing.T) {
 	dir := t.TempDir()
-	lookup, err := identity.Init(identity.ScaffoldOptions{
+	lookup, err := repos.InitIdentity(repos.ScaffoldOptions{
 		Domain:    goblnet.Address("lookup.example"),
 		ConfigDir: dir,
 	})
 	require.NoError(t, err)
-	// Add an allow.json that excludes alice.example.
+	// Restrict the allow-list to exclude alice.example.
 	lookup.Allow = []goblnet.Address{"bob.example"}
 
 	subKey := dsig.NewES256Key()
@@ -389,13 +389,14 @@ func TestAllowListBlocksUnknownSender(t *testing.T) {
 	client := goblnet.NewClient(goblnet.WithFetcher(&mockFetcher{
 		data: map[string][]byte{subAddr.KeyURL(subKey.ID()): pub},
 	}))
-	mux := server.NewMux(server.Deps{
-		Identity: lookup,
-		Registry: registry.NewMemoryStore(),
-		Client:   client,
-		Sender:   &mockSender{},
-		Logger:   discardLogger(),
+	setup := domain.New(domain.Deps{
+		Identity:      lookup,
+		Registrations: repos.NewMemoryRegistrations(),
+		Client:        client,
+		Sender:        &mockSender{},
+		Logger:        discardLogger(),
 	})
+	mux := web.NewMux(setup, discardLogger())
 
 	party := &org.Party{Name: "Alice", Endpoints: []*org.Endpoint{{URI: subAddr.URI()}}}
 	env, err := gobl.Envelop(party)

@@ -19,6 +19,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/invopop/gobl"
+
+	"github.com/invopop/gobl.lookup/internal/config"
 )
 
 var (
@@ -50,8 +52,8 @@ func rootCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.PersistentFlags().BoolVar(&opts.jsonLogs, "json", false,
-		"emit logs as structured JSON on stderr")
+	cmd.PersistentFlags().BoolVar(&opts.jsonLogs, "json", config.EnvBool("LOG_JSON", false),
+		"emit logs as structured JSON on stderr (env LOG_JSON)")
 	cmd.AddCommand(initCmd())
 	cmd.AddCommand(serveCmd())
 	cmd.AddCommand(verifyCmd())
