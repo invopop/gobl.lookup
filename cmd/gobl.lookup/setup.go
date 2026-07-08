@@ -6,9 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
-	kivik "github.com/go-kivik/kivik/v4"
-	_ "github.com/go-kivik/kivik/v4/couchdb" // register the couchdb driver
-
+	"github.com/invopop/couch"
 	"github.com/invopop/gobl"
 	goblnet "github.com/invopop/gobl/net"
 
@@ -28,11 +26,18 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 		return nil, nil, gobl.ErrInternal.WithCause(err)
 	}
 
-	client, err := kivik.New("couch", cfg.CouchDBURL())
+	couchConf, err := cfg.CouchConfig()
 	if err != nil {
-		return nil, nil, gobl.ErrInternal.WithCause(fmt.Errorf("couchdb client: %w", err))
+		return nil, nil, gobl.ErrInternal.WithCause(err)
 	}
-	reg, err := repos.NewRegistrations(ctx, client, cfg.CouchDatabase)
+	client, err := couch.New(couchConf)
+	if err != nil {
+		return nil, nil, gobl.ErrInternal.WithCause(fmt.Errorf("couch client: %w", err))
+	}
+	if err := client.Ping(ctx); err != nil {
+		return nil, nil, gobl.ErrInternal.WithCause(fmt.Errorf("couch ping: %w", err))
+	}
+	reg, err := repos.NewRegistrations(ctx, client)
 	if err != nil {
 		return nil, nil, gobl.ErrInternal.WithCause(err)
 	}

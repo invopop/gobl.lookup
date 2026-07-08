@@ -2,59 +2,47 @@ package repos
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 
 	kivik "github.com/go-kivik/kivik/v4"
-	_ "github.com/go-kivik/kivik/v4/couchdb" // register the couchdb driver
+	"github.com/invopop/couch"
 	"github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/uuid"
 
 	"github.com/invopop/gobl.lookup/internal/domain/models"
 )
 
-// Registrations is a registration store backed by a single CouchDB
-// database. Document IDs follow registration:<address>; the by-UUID
-// lookup uses a `parties` design document whose view emits the
-// envelope UUID as a secondary key.
+// Registrations is a registration store backed by a CouchDB database
+// through the couch library. There is one database (the couch client's
+// prefix); document IDs follow registration:<address>, and the by-UUID
+// lookup uses a `parties` design document whose view emits the envelope
+// UUID as a secondary key.
 type Registrations struct {
 	db *kivik.DB
 }
 
 const (
+	designName  = "parties"
 	designDocID = "_design/parties"
 	viewByUUID  = "by_uuid"
 )
 
-// NewRegistrations opens (and creates if needed) the named database
-// on the provided kivik client, ensures the design document exists,
-// and returns a ready-to-use store.
-func NewRegistrations(ctx context.Context, client *kivik.Client, database string) (*Registrations, error) {
+// NewRegistrations opens (creating if needed) the registrations database
+// on the provided couch client, syncs the design document, and returns a
+// ready-to-use store.
+func NewRegistrations(ctx context.Context, client *couch.Client) (*Registrations, error) {
 	if client == nil {
-		return nil, errors.New("repos: kivik client is required")
+		return nil, errors.New("repos: couch client is required")
 	}
-	if database == "" {
-		return nil, errors.New("repos: database name is required")
+	db := client.DB("") // single database, named by the client's prefix
+	if err := client.Create(ctx, db); err != nil {
+		return nil, fmt.Errorf("repos: create database: %w", err)
 	}
-	exists, err := client.DBExists(ctx, database)
-	if err != nil {
-		return nil, fmt.Errorf("repos: couchdb DBExists: %w", err)
+	if err := client.SyncDesigns(ctx, db, []*couch.Design{partiesDesign()}); err != nil {
+		return nil, fmt.Errorf("repos: sync designs: %w", err)
 	}
-	if !exists {
-		if err := client.CreateDB(ctx, database); err != nil {
-			return nil, fmt.Errorf("repos: couchdb CreateDB %q: %w", database, err)
-		}
-	}
-	r := &Registrations{db: client.DB(database)}
-	if err := r.db.Err(); err != nil {
-		return nil, fmt.Errorf("repos: couchdb DB %q: %w", database, err)
-	}
-	if err := r.ensureDesignDoc(ctx); err != nil {
-		return nil, err
-	}
-	return r, nil
+	return &Registrations{db: db}, nil
 }
 
 // Close releases the underlying CouchDB connection.
@@ -65,67 +53,44 @@ func (r *Registrations) Close() error {
 	return r.db.Close()
 }
 
-// designDocBody is the JSON for the parties design document.
-var designDocBody = map[string]any{
-	"_id":      designDocID,
-	"language": "javascript",
-	"views": map[string]any{
-		viewByUUID: map[string]any{
-			"map": `function(doc) {
-				if (doc._id.indexOf("registration:") === 0 && doc.incoming_envelope_uuid) {
-					emit(doc.incoming_envelope_uuid, null);
-				}
-			}`,
-		},
-	},
+// partiesDesign builds the design document backing GetByUUID: it emits
+// (incoming_envelope_uuid → null) for every registration record.
+func partiesDesign() *couch.Design {
+	d := couch.NewDesign(designName)
+	d.SetView(viewByUUID, &couch.View{
+		Map: `function(doc) {
+			if (doc._id.indexOf("registration:") === 0 && doc.incoming_envelope_uuid) {
+				emit(doc.incoming_envelope_uuid, null);
+			}
+		}`,
+	})
+	return d
 }
 
-func (r *Registrations) ensureDesignDoc(ctx context.Context) error {
-	row := r.db.Get(ctx, designDocID)
-	var existing map[string]json.RawMessage
-	err := row.ScanDoc(&existing)
-	switch {
-	case err == nil:
-		// Already present. We don't attempt to upgrade the body in v1;
-		// operators rotate by deleting the design doc.
-		return nil
-	case kivik.HTTPStatus(err) == http.StatusNotFound:
-		// fall through to create.
-	default:
-		return fmt.Errorf("repos: couchdb read design doc: %w", err)
+// Put creates or updates the record. On a revision conflict it returns
+// ErrConflict so the caller can re-Get and retry.
+func (r *Registrations) Put(ctx context.Context, reg *models.Registration) error {
+	if err := reg.Validate(); err != nil {
+		return err
 	}
-	if _, err := r.db.Put(ctx, designDocID, designDocBody); err != nil {
-		return fmt.Errorf("repos: couchdb create design doc: %w", err)
+	if err := couch.Store(ctx, r.db, reg); err != nil {
+		if errors.Is(err, couch.ErrAlreadyExists) {
+			return ErrConflict
+		}
+		return fmt.Errorf("repos: store registration: %w", err)
 	}
 	return nil
 }
 
-// Put creates or updates the record, returning the new revision. On
-// ErrConflict the caller should re-Get and retry.
-func (r *Registrations) Put(ctx context.Context, reg *models.Registration) (string, error) {
-	if err := reg.Validate(); err != nil {
-		return "", err
-	}
-	rev, err := r.db.Put(ctx, reg.ID, reg)
-	if err != nil {
-		if kivik.HTTPStatus(err) == http.StatusConflict {
-			return "", ErrConflict
-		}
-		return "", fmt.Errorf("repos: couchdb put: %w", err)
-	}
-	reg.Rev = rev
-	return rev, nil
-}
-
 // Get returns the record for an address or ErrNotFound.
 func (r *Registrations) Get(ctx context.Context, address net.Address) (*models.Registration, error) {
-	row := r.db.Get(ctx, models.RegistrationDocID(address))
 	reg := new(models.Registration)
-	if err := row.ScanDoc(reg); err != nil {
-		if kivik.HTTPStatus(err) == http.StatusNotFound {
+	reg.ID = models.RegistrationDocID(address)
+	if err := couch.Fetch(ctx, r.db, reg); err != nil {
+		if errors.Is(err, couch.ErrNotFound) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("repos: couchdb get: %w", err)
+		return nil, fmt.Errorf("repos: fetch registration: %w", err)
 	}
 	return reg, nil
 }

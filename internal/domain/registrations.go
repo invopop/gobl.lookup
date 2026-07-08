@@ -167,14 +167,14 @@ func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*mode
 		rec.Status = models.StatusFailed
 		rec.LastDeliveryError = err.Error()
 		rec.LastDeliveryAt = &now
-		_, _ = d.store.Put(ctx, rec)
+		_ = d.store.Put(ctx, rec)
 		return nil, ErrInternal.WithCause(fmt.Errorf("deliver verified envelope: %w", err))
 	}
 	rec.Status = models.StatusDelivered
 	rec.LastDeliveryError = ""
 	rec.LastDeliveryAt = &now
 	rec.DeliveryAttempts++
-	if _, err := d.store.Put(ctx, rec); err != nil {
+	if err := d.store.Put(ctx, rec); err != nil {
 		return nil, ErrInternal.WithCause(err)
 	}
 	d.log.Info("verified registration",
@@ -224,7 +224,7 @@ func (d *Registrations) upsert(ctx context.Context, sender goblnet.Address, env 
 		r.Scope = head.ScopeRegistered
 		r.Status = models.StatusCountersigned
 		r.CountersignedEnvelope = env
-		if _, err := d.store.Put(ctx, r); err != nil {
+		if err := d.store.Put(ctx, r); err != nil {
 			return nil, err
 		}
 		return r, nil
@@ -240,7 +240,7 @@ func (d *Registrations) upsert(ctx context.Context, sender goblnet.Address, env 
 	prev.LastDeliveryError = ""
 	prev.LastDeliveryAt = nil
 	prev.VerifiedAt = nil
-	if _, err := d.store.Put(ctx, prev); err != nil {
+	if err := d.store.Put(ctx, prev); err != nil {
 		return nil, err
 	}
 	return prev, nil
@@ -272,7 +272,7 @@ func (d *Registrations) deliverAsync(sender goblnet.Address, env *gobl.Envelope,
 			"envelope", env.Head.UUID.String(),
 		)
 	}
-	if _, err := d.store.Put(ctx, rec); err != nil {
+	if err := d.store.Put(ctx, rec); err != nil {
 		d.log.Error("inbox.persist_post_delivery_failed",
 			"caller", string(sender),
 			"envelope", env.Head.UUID.String(),

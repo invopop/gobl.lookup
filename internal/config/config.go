@@ -5,11 +5,14 @@
 package config
 
 import (
+	"errors"
 	"net"
 	"net/url"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/invopop/couch"
 )
 
 // Config holds the options shared by the serve and verify commands.
@@ -97,6 +100,36 @@ func (c Config) CouchDBURL() string {
 		}
 	}
 	return u.String()
+}
+
+// CouchConfig builds a *couch.Config from the resolved connection. The
+// database name (COUCHDB_DATABASE) is used as the couch prefix; the
+// registrations repo opens the single database named by that prefix.
+func (c Config) CouchConfig() (*couch.Config, error) {
+	raw := c.CouchDBURL()
+	if raw == "" {
+		return nil, errors.New("config: no CouchDB connection configured")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	cc := &couch.Config{
+		Scheme: u.Scheme,
+		Host:   u.Hostname(),
+		Port:   u.Port(),
+		Prefix: c.CouchDatabase,
+	}
+	if cc.Port == "" {
+		cc.Port = "5984"
+	}
+	if u.User != nil {
+		cc.Username = u.User.Username()
+		if pw, ok := u.User.Password(); ok {
+			cc.Password = pw
+		}
+	}
+	return cc, nil
 }
 
 // CouchDBRedacted returns the resolved CouchDB URL with any credentials

@@ -19,10 +19,9 @@ func TestMemoryStorePutGet(t *testing.T) {
 	addr := net.Address("alice.example")
 	r := models.NewRegistration(addr, uuid.V7())
 
-	rev, err := s.Put(ctx, r)
+	err := s.Put(ctx, r)
 	require.NoError(t, err)
-	assert.NotEmpty(t, rev)
-	assert.Equal(t, rev, r.Rev)
+	assert.NotEmpty(t, r.Rev)
 
 	got, err := s.Get(ctx, addr)
 	require.NoError(t, err)
@@ -43,7 +42,7 @@ func TestMemoryStoreGetByUUID(t *testing.T) {
 	s := repos.NewMemoryRegistrations()
 	envUUID := uuid.V7()
 	r := models.NewRegistration("alice.example", envUUID)
-	_, err := s.Put(ctx, r)
+	err := s.Put(ctx, r)
 	require.NoError(t, err)
 
 	got, err := s.GetByUUID(ctx, envUUID)
@@ -58,14 +57,14 @@ func TestMemoryStoreUpdateRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := repos.NewMemoryRegistrations()
 	r := models.NewRegistration("alice.example", uuid.V7())
-	_, err := s.Put(ctx, r)
+	err := s.Put(ctx, r)
 	require.NoError(t, err)
 
 	// Re-read to pick up the new _rev, advance status, write back.
 	got, err := s.Get(ctx, "alice.example")
 	require.NoError(t, err)
 	got.Status = models.StatusDelivered
-	_, err = s.Put(ctx, got)
+	err = s.Put(ctx, got)
 	require.NoError(t, err)
 
 	final, err := s.Get(ctx, "alice.example")
@@ -77,12 +76,12 @@ func TestMemoryStorePutWithoutMatchingRevConflicts(t *testing.T) {
 	ctx := context.Background()
 	s := repos.NewMemoryRegistrations()
 	r := models.NewRegistration("alice.example", uuid.V7())
-	_, err := s.Put(ctx, r)
+	err := s.Put(ctx, r)
 	require.NoError(t, err)
 
 	// Drop the rev and try to write again — should conflict.
 	r.Rev = ""
-	_, err = s.Put(ctx, r)
+	err = s.Put(ctx, r)
 	require.ErrorIs(t, err, repos.ErrConflict)
 }
 
@@ -92,7 +91,7 @@ func TestMemoryStorePutNewRecordRejectsStaleRev(t *testing.T) {
 	r := models.NewRegistration("alice.example", uuid.V7())
 	// Pretend the caller has a rev for a doc that doesn't exist.
 	r.Rev = "1-deadbeef"
-	_, err := s.Put(ctx, r)
+	err := s.Put(ctx, r)
 	require.ErrorIs(t, err, repos.ErrConflict)
 }
 

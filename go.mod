@@ -1,9 +1,10 @@
 module github.com/invopop/gobl.lookup
 
-go 1.24.0
+go 1.25.0
 
 require (
 	github.com/go-kivik/kivik/v4 v4.5.2
+	github.com/invopop/couch v0.1.0
 	github.com/invopop/gobl v0.403.1-0.20260607084143-424395a8cae9
 	github.com/magefile/mage v1.17.2
 	github.com/spf13/cobra v1.10.2
@@ -28,8 +29,8 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sync v0.11.0 // indirect
-	golang.org/x/text v0.22.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

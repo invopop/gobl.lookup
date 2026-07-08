@@ -276,7 +276,7 @@ func TestReRegistrationDropsScopeToRegistered(t *testing.T) {
 	rec.Scope = head.ScopeVerified
 	now := time.Now().UTC()
 	rec.VerifiedAt = &now
-	_, err := f.registry.Put(context.Background(), rec)
+	err := f.registry.Put(context.Background(), rec)
 	require.NoError(t, err)
 
 	// Re-register: scope must drop back to registered.

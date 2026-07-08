@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/invopop/couch"
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/cbc"
 	"github.com/invopop/gobl/net"
@@ -34,10 +35,10 @@ const (
 
 // Registration is the per-address registration document persisted in
 // CouchDB. The CouchDB document ID is "registration:<address>" so
-// re-registrations land as new revisions on the same row.
+// re-registrations land as new revisions on the same row. It embeds
+// couch.Model for the _id/_rev + created_at/updated_at handling.
 type Registration struct {
-	ID                    string         `json:"_id"`
-	Rev                   string         `json:"_rev,omitempty"`
+	couch.Model
 	Address               net.Address    `json:"address"`
 	Scope                 cbc.Key        `json:"scope,omitempty"`
 	Status                Status         `json:"status"`
@@ -59,13 +60,14 @@ func RegistrationDocID(addr net.Address) string {
 // envelope. The caller fills in Status / CountersignedEnvelope as the
 // processing pipeline advances.
 func NewRegistration(addr net.Address, envUUID uuid.UUID) *Registration {
-	return &Registration{
-		ID:                   RegistrationDocID(addr),
+	r := &Registration{
 		Address:              addr,
 		Status:               StatusReceived,
 		IncomingEnvelopeUUID: envUUID,
 		ReceivedAt:           time.Now().UTC(),
 	}
+	r.ID = RegistrationDocID(addr) // promoted from couch.Model
+	return r
 }
 
 // Validate reports whether the record is internally consistent

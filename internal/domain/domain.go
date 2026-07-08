@@ -21,8 +21,8 @@ import (
 // service depends on. repos.Registrations (CouchDB) and
 // repos.MemoryRegistrations (tests) both satisfy it.
 type RegistrationStore interface {
-	// Put creates or updates the record, returning the new revision.
-	Put(ctx context.Context, reg *models.Registration) (string, error)
+	// Put creates or updates the record.
+	Put(ctx context.Context, reg *models.Registration) error
 	// Get returns the record for an address or repos.ErrNotFound.
 	Get(ctx context.Context, address goblnet.Address) (*models.Registration, error)
 	// GetByUUID returns the record whose IncomingEnvelopeUUID matches,

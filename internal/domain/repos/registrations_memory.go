@@ -26,25 +26,26 @@ func NewMemoryRegistrations() *MemoryRegistrations {
 	return &MemoryRegistrations{records: make(map[string]*models.Registration)}
 }
 
-// Put creates or updates the record, returning the new revision.
-func (m *MemoryRegistrations) Put(_ context.Context, reg *models.Registration) (string, error) {
+// Put creates or updates the record.
+func (m *MemoryRegistrations) Put(_ context.Context, reg *models.Registration) error {
 	if err := reg.Validate(); err != nil {
-		return "", err
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	prev, exists := m.records[reg.ID]
 	if exists {
 		if reg.Rev != prev.Rev {
-			return "", ErrConflict
+			return ErrConflict
 		}
 	} else if reg.Rev != "" {
-		return "", ErrConflict
+		return ErrConflict
 	}
+	reg.UpdateTimestamps() // parity with couch.Store
 	reg.Rev = newRev()
 	clone := *reg
 	m.records[reg.ID] = &clone
-	return reg.Rev, nil
+	return nil
 }
 
 // Get returns the record for an address or ErrNotFound.
