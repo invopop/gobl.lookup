@@ -44,7 +44,8 @@ type Deps struct {
 	Sender delivery.Sender
 	// PublicBaseURL is the canonical https URL clients use to fetch
 	// this lookup (e.g. "https://lookup.gobl.org"); used to build the
-	// head.Link to the public registration record. Empty omits it.
+	// head.Link to the public registration record. When empty, New
+	// defaults it to https://<domain>.
 	PublicBaseURL string
 	// Logger receives domain event logs. Defaults to slog.Default().
 	Logger *slog.Logger

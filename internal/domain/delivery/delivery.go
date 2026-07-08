@@ -127,8 +127,22 @@ func safeDialContext(ctx context.Context, network, addr string) (stdnet.Conn, er
 			return nil, fmt.Errorf("%w: refusing to dial non-public address %s (%s)", ErrSendFailed, host, ip)
 		}
 	}
+	// Dial the IPs we just vetted rather than re-resolving the host at
+	// connect time: a second resolution could return a different, private
+	// address and slip past the check (DNS rebinding / TOCTOU).
 	d := &stdnet.Dialer{Timeout: dialTimeout}
-	return d.DialContext(ctx, network, stdnet.JoinHostPort(host, port))
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := d.DialContext(ctx, network, stdnet.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("%w: no addresses for %s", ErrSendFailed, host)
+	}
+	return nil, lastErr
 }
 
 // isPublicIP rejects any loopback, private (RFC 1918 / RFC 6598),

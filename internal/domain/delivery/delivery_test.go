@@ -92,7 +92,11 @@ func TestSendInvalidAddress(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrSendFailed))
 }
 
-func TestSendNon202ReturnsInboxRejected(t *testing.T) {
+// The public Send path derives its URL from net.Address.InboxURL(), which
+// can't be pointed at a loopback httptest server, so this exercises the
+// sender's HTTP transport directly and asserts a non-202 upstream status is
+// surfaced (Send maps that to ErrInboxRejected).
+func TestTransportSurfacesUpstreamStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
