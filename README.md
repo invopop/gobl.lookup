@@ -119,7 +119,7 @@ preserve the audit trail across re-registrations.
 | Command                        | Purpose                                                                                 |
 |--------------------------------|-----------------------------------------------------------------------------------------|
 | `gobl.lookup init <domain>`    | Scaffold keypair + `party.json` + `keys/<kid>.json`.                                    |
-| `gobl.lookup serve`            | Run the HTTPS server (HTTP-only termination; deploy behind a TLS proxy).                |
+| `gobl.lookup serve`            | Run the HTTP server (terminates HTTP only; deploy behind a TLS proxy).                   |
 | `gobl.lookup verify <address>` | Bump a registration to `head.ScopeVerified` after out-of-band KYC and re-deliver.       |
 | `gobl.lookup version`          | Print service + core gobl versions.                                                     |
 

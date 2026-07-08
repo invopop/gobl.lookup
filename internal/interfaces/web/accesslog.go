@@ -33,6 +33,12 @@ type statusWriter struct {
 	wroteHeader bool
 }
 
+// Unwrap exposes the wrapped ResponseWriter so http.ResponseController
+// can reach optional interfaces (Flusher, Hijacker, …) it implements.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 func (w *statusWriter) WriteHeader(status int) {
 	if w.wroteHeader {
 		return

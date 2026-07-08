@@ -17,7 +17,7 @@
 - `head.Link` discovery hint stamped on the countersigned envelope pointing at `<public-base-url>/parties/<uuid>`. Header links are mutable post-signature — the link is a discovery hint, not part of the trust claim.
 - CLI:
   - `gobl.lookup init <domain>` scaffolds the lookup's keypair + party.json + keys/<kid>.json under `--config-dir`.
-  - `gobl.lookup serve --config-dir … --couchdb …` runs the HTTPS server (HTTP-only terminator in v1; deploy behind a TLS proxy).
+  - `gobl.lookup serve --config-dir … --couchdb …` runs the HTTP server (terminates HTTP only in v1; deploy behind a TLS proxy).
   - `gobl.lookup verify <address>` re-countersigns the registered envelope with `head.ScopeVerified` and re-delivers to the sender's inbox.
   - `gobl.lookup version` prints the service + core gobl version.
 - SSRF defense on outbound delivery: refuses to dial loopback / private / link-local / multicast / unspecified IPs. Same policy as `gobl/net`'s default `HTTPFetcher`.

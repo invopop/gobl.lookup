@@ -55,7 +55,9 @@ func writeError(w http.ResponseWriter, err error) {
 	if msg == "" {
 		msg = de.Error()
 	}
-	http.Error(w, msg, statusForError(err))
+	// Map the status from the resolved domain error so it always matches
+	// the message being returned.
+	http.Error(w, msg, statusForError(de))
 }
 
 // statusForError resolves the HTTP status for a domain error kind.

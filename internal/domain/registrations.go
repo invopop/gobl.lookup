@@ -162,18 +162,21 @@ func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*mode
 	now := time.Now().UTC()
 	rec.VerifiedAt = &now
 	rec.Status = models.StatusCountersigned
+	// Count the attempt up front (as the async path does) so a failure is
+	// still reflected in DeliveryAttempts.
+	rec.DeliveryAttempts++
+	rec.LastDeliveryAt = &now
 
-	if err := d.sender.Send(ctx, addr, env); err != nil {
+	sendCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
+	defer cancel()
+	if err := d.sender.Send(sendCtx, addr, env); err != nil {
 		rec.Status = models.StatusFailed
 		rec.LastDeliveryError = err.Error()
-		rec.LastDeliveryAt = &now
 		_ = d.store.Put(ctx, rec)
 		return nil, ErrInternal.WithCause(fmt.Errorf("deliver verified envelope: %w", err))
 	}
 	rec.Status = models.StatusDelivered
 	rec.LastDeliveryError = ""
-	rec.LastDeliveryAt = &now
-	rec.DeliveryAttempts++
 	if err := d.store.Put(ctx, rec); err != nil {
 		return nil, ErrInternal.WithCause(err)
 	}

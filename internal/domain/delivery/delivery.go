@@ -22,12 +22,11 @@ import (
 	"github.com/invopop/gobl/net"
 )
 
-// Defaults mirror gobl.dev's `gobl net send` and gobl/net's
-// HTTPFetcher so the wire behaviour is consistent.
-const (
-	defaultTimeout = 10 * time.Second
-	dialTimeout    = 5 * time.Second
-)
+// dialTimeout bounds connection establishment (dial + TLS handshake).
+// The overall request deadline is governed by the caller's context, not
+// a fixed http.Client.Timeout, so it stays consistent with the domain's
+// delivery timeout.
+const dialTimeout = 5 * time.Second
 
 // Errors returned by Send.
 var (
@@ -71,10 +70,10 @@ func newSender(allowLoopback bool) *HTTPSender {
 		transport.DialContext = safeDialContext
 	}
 	return &HTTPSender{
-		client: &http.Client{
-			Timeout:   defaultTimeout,
-			Transport: transport,
-		},
+		// No fixed Timeout: the per-request deadline comes from the
+		// caller's context (see Send), keeping it in step with the
+		// domain's delivery timeout.
+		client: &http.Client{Transport: transport},
 	}
 }
 
