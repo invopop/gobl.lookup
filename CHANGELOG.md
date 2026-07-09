@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Identity key files under `keys/` no longer need to be named after their kid — the kid is read from the JWK itself, and any `*.json` file is accepted (`Init` still writes `<kid>.json`). This lets a deployment mount the published key at a fixed path (e.g. `keys/public.json`) without encoding the kid in the filename.
 - Persistence now uses the shared [`github.com/invopop/couch`](https://github.com/invopop/couch) library: `models.Registration` embeds `couch.Model` (gaining `created_at`/`updated_at` and revision handling), and the CouchDB store uses `couch.Client`/`couch.Store`/`couch.Fetch` and a `couch.Design` for the by-UUID view. The registration database is the couch client's prefix (`COUCHDB_DATABASE`).
 - Configuration is now read from the environment (`CONFIG_DIR`, `COUCHDB_URL` or the split `COUCHDB_SCHEME/HOST/PORT/USERNAME/PASSWORD`, `COUCHDB_DATABASE`, `HTTP_PORT`/`PORT`, `PUBLIC_BASE_URL`, `LOG_JSON`) so the service can be configured — and its CouchDB password injected from a secret — the way the cluster provides config. The equivalent CLI flags still work and override the environment. Env var names match the sibling services (silo/access).
 - Removed the Fly.io deployment (`fly.toml`); the `Dockerfile` (small, static, non-root) is the deployment artifact for the Kubernetes cluster.
