@@ -20,6 +20,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM alpine:3.21
 
+# Links the ghcr.io package to this repository (and its visibility/permissions).
+LABEL org.opencontainers.image.source="https://github.com/invopop/gobl.lookup"
+
 RUN apk add --no-cache ca-certificates tzdata && adduser -D -u 1000 gobl
 
 COPY --from=builder /out/gobl.lookup /usr/local/bin/gobl.lookup
