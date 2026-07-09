@@ -1,16 +1,14 @@
 #
 # Tag a merge to main (semver), then build and publish the container image to
-# Artifact Registry. Flux image automation in deploy-production-apps
-# (ImageRepository europe-docker.pkg.dev/invopop/apps/gobl.lookup) picks up the
-# new tag and rolls the deployment.
+# the GitHub Container Registry (ghcr.io). No external credentials are needed —
+# the build authenticates with the built-in GITHUB_TOKEN — which suits this
+# public repository. Flux image automation in deploy-production-apps picks up
+# the new tag and rolls the deployment.
 #
-# Repository secrets required:
-#  * GCP_PROJECT_ID - Google Cloud project of the Artifact Registry (invopop)
-#  * GCP_SA_KEY     - JSON service account key with artifactregistry.writer on
-#                     the `apps` repository
-#
-# gobl.lookup has only public Go modules, so no GO_MOD_USER/GO_MOD_PASS is
-# needed (unlike the private-module services).
+# One-time setup: after the first push, set the `gobl.lookup` package to
+# **public** in its GitHub package settings so the cluster (and Flux) can pull
+# and scan it without credentials. The Dockerfile's
+# org.opencontainers.image.source label links the package to this repo.
 #
 
 name: Release
@@ -24,10 +22,11 @@ on:
 
 permissions:
   contents: write # the tag action pushes a new tag
+  packages: write # push the image to ghcr.io
 
 env:
-  REGISTRY: europe-docker.pkg.dev
-  REPO_PATH: invopop/apps
+  REGISTRY: ghcr.io
+  REPO_PATH: invopop
 
 jobs:
   tag-build-publish:
@@ -59,19 +58,12 @@ jobs:
         run: |
           echo "REPO_VERSION=${{ steps.bump.outputs.new_tag }}" >> $GITHUB_ENV
 
-      - name: Google Auth
-        uses: "google-github-actions/auth@v2"
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Setup Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-
-      - name: Configure Docker Credentials
-        run: |
-          gcloud auth configure-docker ${{ env.REGISTRY }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
         run: |
