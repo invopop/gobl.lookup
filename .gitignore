@@ -30,3 +30,12 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local mage Build output.
+/bin/
+
+# Local `go build ./cmd/gobl.lookup` output in the repo root.
+/gobl.lookup
+
+# Local development scaffolding (gobl.lookup init --config-dir ./dev/...)
+/dev/
