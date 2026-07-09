@@ -164,7 +164,6 @@ func loadKeys(dir string) ([]*dsig.PublicKey, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		expectedKid := strings.TrimSuffix(e.Name(), ".json")
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("repos: read keys/%s: %w", e.Name(), err)
@@ -173,8 +172,12 @@ func loadKeys(dir string) ([]*dsig.PublicKey, error) {
 		if err := json.Unmarshal(data, pk); err != nil {
 			return nil, fmt.Errorf("repos: parse keys/%s: %w", e.Name(), err)
 		}
-		if pk.ID() != expectedKid {
-			return nil, fmt.Errorf("repos: keys/%s has kid %q (must equal filename)", e.Name(), pk.ID())
+		// The kid is taken from the JWK itself; the filename is only a
+		// convention (Init writes <kid>.json), so any *.json is accepted.
+		// This lets deployments mount the key at a fixed path without
+		// having to encode the kid in the filename.
+		if pk.ID() == "" {
+			return nil, fmt.Errorf("repos: keys/%s has no kid", e.Name())
 		}
 		out = append(out, pk)
 	}

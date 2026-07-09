@@ -88,9 +88,9 @@ func TestLoadRejectsPartyWithoutGoblEndpoint(t *testing.T) {
 	assert.Contains(t, err.Error(), "no gobl: endpoint")
 }
 
-func TestLoadRejectsMismatchedKid(t *testing.T) {
-	// Scaffold a valid identity, then corrupt the keys/<kid>.json
-	// filename so it no longer matches the JWK's kid.
+func TestLoadAcceptsAnyKeyFilename(t *testing.T) {
+	// The key file need not be named after its kid; the kid comes from the
+	// JWK content, so a deployment can mount it at a fixed path.
 	dir := t.TempDir()
 	id, err := repos.InitIdentity(repos.ScaffoldOptions{
 		Domain:    net.Address("lookup.example"),
@@ -101,12 +101,12 @@ func TestLoadRejectsMismatchedKid(t *testing.T) {
 	keysDir := filepath.Join(dir, repos.KeysDirName)
 	require.NoError(t, os.Rename(
 		filepath.Join(keysDir, kid+".json"),
-		filepath.Join(keysDir, "wrong-name.json"),
+		filepath.Join(keysDir, "public.json"),
 	))
 
-	_, err = repos.LoadIdentity(dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must equal filename")
+	id2, err := repos.LoadIdentity(dir)
+	require.NoError(t, err)
+	assert.NotNil(t, id2.FindKey(kid), "key still loaded, keyed by its JWK kid")
 }
 
 func TestLoadAllowList(t *testing.T) {
