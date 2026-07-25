@@ -99,7 +99,8 @@ The domain never imports the transport layer.
 
 The who and inbox endpoints require a bearer request token (spec
 §5.5) minted from the caller's own published key; requests without
-a valid token get `401`. The token's issuer may be a trusted
+a valid token get `401`, and `503` when the token cannot be checked
+because the issuer's key endpoint is unreachable (retry). The token's issuer may be a trusted
 intermediary transmitting on the registrant's behalf — the
 registration subject always comes from the envelope's own
 signature. Key discovery stays open (it is what makes token
