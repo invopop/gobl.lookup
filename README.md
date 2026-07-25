@@ -127,9 +127,14 @@ go run ./cmd/gobl.lookup serve \
     --public-base-url http://localhost:8081
 ```
 
-Then from a `gobl.dev` node, point `gobl net send` at lookup with
-the `--insecure` flag (HTTP-only, dev-only). The countersigned
-envelope lands in your node's `inbox/` directory.
+GOBL Net clients always dial `https://<address>`, so to register
+from a `gobl.dev` node against a local lookup you need a
+domain-shaped hostname (e.g. `lookup.local` via `/etc/hosts`) and a
+TLS-terminating proxy in front of the HTTP port with a locally
+trusted certificate (e.g. Caddy or mkcert + nginx). The
+countersigned envelope lands in your node's `inbox/` directory.
+End-to-end behaviour without TLS plumbing is covered by the test
+suites, which inject fetchers instead of dialing.
 
 ## CouchDB schema
 
