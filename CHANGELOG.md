@@ -4,6 +4,15 @@
 
 ### Changed
 
+- Transient failures now answer `503 Service Unavailable` instead of
+  a definitive 4xx: an unreachable requester key endpoint during
+  token verification (log reason `token_unavailable`), and an
+  unreachable sender `/who` during registration eligibility (log
+  reason `who_unavailable`) — senders stop retrying on 4xx, so
+  outages must not permanently reject. Outbound deliveries likewise
+  distinguish retryable conditions (transport failures, 429, 5xx →
+  `net.ErrUnavailable`) from definitive inbox rejections.
+
 - Every Authority countersignature now carries a 90-day `exp` claim; parties renew by re-registering before it passes. A renewal with an unchanged party document (same digest) is countersigned with the party's current `verifier` claim — verified stays verified — while changed party data drops the verifier and clears `verified_at`.
 - The `scope` claim is replaced by structural verification (spec §5.3): a registration countersignature alone asserts a registered identity, and `gobl.lookup verify` re-countersigns with a `verifier` claim naming the KYC/KYB authority. `--verifier` names an external verifying authority (its own countersignature must already be on the stored envelope); the default is the lookup itself, whose single countersignature carries both attestations. The verifier signature's `exp` is independent of the 90-day registration cycle, so verifications can be much longer-lived. `Registration.Verifier` replaces the stored `scope` field.
 - `/.well-known/gobl/who` is now a `GET` serving the lookup's self-signed party envelope (signed once per process), replacing the authenticated `POST` exchange. Together with `/inbox` it requires a bearer request token (spec §5.5): the requester's token is verified against its published key, audience, and freshness window, and requests without a valid token are rejected with `401` (`auth.rejected` log reasons `token_missing`/`token_invalid`/`token_expired`). The response is served with `Cache-Control: private, max-age=300`; authenticated requests are logged with the requester address as the request audit log. Key discovery and `/parties` stay open.

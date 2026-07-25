@@ -32,9 +32,14 @@ const dialTimeout = 5 * time.Second
 // Errors returned by Send.
 var (
 	// ErrInboxRejected matches gobl/net's sentinel — the remote
-	// /inbox returned anything other than 202.
+	// /inbox definitively rejected the envelope (a non-429 4xx);
+	// retrying will not help.
 	ErrInboxRejected = net.ErrInboxRejected
-	// ErrSendFailed wraps transport / encoding errors during send.
+	// ErrUnavailable matches gobl/net's sentinel — the remote /inbox
+	// could not be reached or answered 429/5xx; the delivery should
+	// be retried.
+	ErrUnavailable = net.ErrUnavailable
+	// ErrSendFailed wraps input / encoding errors during send.
 	ErrSendFailed = errors.New("delivery: send failed")
 )
 
@@ -113,13 +118,19 @@ func (s *HTTPSender) Send(ctx context.Context, addr net.Address, env *gobl.Envel
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrSendFailed, err)
+		// Transport failures are transient: the async delivery loop
+		// retries them, unlike definitive inbox rejections.
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	if resp.StatusCode != http.StatusAccepted {
+	switch {
+	case resp.StatusCode == http.StatusAccepted:
+		return nil
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+		return fmt.Errorf("%w: HTTP %d from %s", ErrUnavailable, resp.StatusCode, url)
+	default:
 		return fmt.Errorf("%w: HTTP %d from %s", ErrInboxRejected, resp.StatusCode, url)
 	}
-	return nil
 }
 
 // safeDialContext is the DialContext used by the default HTTPSender's

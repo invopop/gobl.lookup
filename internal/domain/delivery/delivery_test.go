@@ -187,3 +187,41 @@ func (m *mapFetcher) Fetch(_ context.Context, url string, _ http.Header) ([]byte
 	}
 	return nil, net.ErrFetchFailed
 }
+
+func (m *mapFetcher) Post(_ context.Context, _ string, _ []byte, _ http.Header) error {
+	return net.ErrFetchFailed
+}
+
+func TestSendRetryableTaxonomy(t *testing.T) {
+	send := func(t *testing.T, status int) error {
+		t.Helper()
+		s := &HTTPSender{
+			self: testSelf,
+			key:  testSelfKey,
+			client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: status, Body: http.NoBody, Request: r}, nil
+			})},
+		}
+		return s.Send(context.Background(), net.Address("alice.example"), buildEnvelope(t))
+	}
+
+	t.Run("5xx is retryable", func(t *testing.T) {
+		err := send(t, http.StatusBadGateway)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrUnavailable))
+		assert.False(t, errors.Is(err, ErrInboxRejected))
+	})
+
+	t.Run("429 is retryable", func(t *testing.T) {
+		err := send(t, http.StatusTooManyRequests)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrUnavailable))
+	})
+
+	t.Run("4xx is a definitive rejection", func(t *testing.T) {
+		err := send(t, http.StatusUnauthorized)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrInboxRejected))
+		assert.False(t, errors.Is(err, ErrUnavailable))
+	})
+}

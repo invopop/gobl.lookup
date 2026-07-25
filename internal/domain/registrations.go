@@ -99,6 +99,13 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	// (which also re-fetches its published key) must return a verified
 	// party. A 204 marks a receive-only account, which cannot register.
 	if _, err := d.client.Who(ctx, sender); err != nil {
+		// A transient outage while resolving the sender's who must not
+		// permanently reject the registration: senders stop retrying
+		// on 4xx, so surface a retryable condition instead.
+		if errors.Is(err, goblnet.ErrUnavailable) {
+			d.log.Warn("inbox.rejected", "reason", "who_unavailable", "caller", string(sender), "error", err.Error())
+			return nil, ErrUnavailable.WithMessage("could not reach sender's public identity; retry later")
+		}
 		reason := "who_failed"
 		msg := "could not resolve sender's public identity"
 		switch {

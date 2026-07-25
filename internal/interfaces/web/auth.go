@@ -31,6 +31,19 @@ func requireAuth(s *domain.Setup, log *slog.Logger, next http.HandlerFunc) http.
 		header := r.Header.Get("Authorization")
 		requester, err := s.Identity().VerifyRequest(r.Context(), header)
 		if err != nil {
+			// A token that cannot be *checked* (the issuer's key
+			// endpoint is unreachable) is not an invalid token:
+			// answer 503 so the client retries.
+			if errors.Is(err, goblnet.ErrUnavailable) {
+				log.Warn("auth.rejected",
+					"path", r.URL.Path,
+					"reason", "token_unavailable",
+					"remote", r.RemoteAddr,
+					"error", err.Error(),
+				)
+				http.Error(w, "could not verify request token", http.StatusServiceUnavailable)
+				return
+			}
 			reason := "token_invalid"
 			switch {
 			case header == "":

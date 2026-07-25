@@ -75,6 +75,8 @@ func statusForError(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrConflict):
 		return http.StatusConflict
+	case errors.Is(err, domain.ErrUnavailable):
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -43,6 +44,10 @@ func (m *mockFetcher) Fetch(_ context.Context, url string, _ http.Header) ([]byt
 		return d, nil
 	}
 	return nil, goblnet.ErrFetchFailed
+}
+
+func (m *mockFetcher) Post(_ context.Context, _ string, _ []byte, _ http.Header) error {
+	return goblnet.ErrFetchFailed
 }
 
 // mockSender records send attempts. By default it succeeds; set `err`
@@ -556,4 +561,28 @@ func TestInboxRejectsReceiveOnlySender(t *testing.T) {
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestRequestAuthUnavailable(t *testing.T) {
+	// The requester's key endpoint is unreachable: the lookup answers
+	// 503 so the caller retries, not a definitive 401.
+	f := newFixture(t)
+	f.fetcher.errs[f.subAddr.KeyURL(f.subject.ID())] = fmt.Errorf("%w: HTTP 503", goblnet.ErrUnavailable)
+
+	resp := f.get(goblnet.WhoPath)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestInboxWhoUnavailable(t *testing.T) {
+	// A transient outage resolving the sender's who must answer 503 —
+	// a 4xx would make the sender stop retrying its registration.
+	f := newFixture(t)
+	f.fetcher.errs[f.subAddr.WhoURL()] = fmt.Errorf("%w: HTTP 503", goblnet.ErrUnavailable)
+
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }

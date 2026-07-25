@@ -30,6 +30,10 @@ var (
 	// ErrConflict is returned when an optimistic-concurrency write
 	// loses a race; callers should re-read and retry.
 	ErrConflict = NewError("conflict")
+	// ErrUnavailable is returned when a remote dependency needed to
+	// process the request (a key or who endpoint) could not be
+	// reached: a transient condition the caller should retry.
+	ErrUnavailable = NewError("unavailable")
 	// ErrInternal wraps an unexpected failure.
 	ErrInternal = NewError("internal")
 )
