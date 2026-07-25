@@ -164,18 +164,37 @@ func (f *fixture) waitForDelivery(d time.Duration) []sentEnvelope {
 	return f.sender.records()
 }
 
-func (f *fixture) post(path string, body []byte) *http.Response {
+// bearer mints a request token from the subject for the lookup, as
+// any conforming client would attach to a who or inbox request.
+func (f *fixture) bearer() string {
 	f.t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	f.mux.ServeHTTP(rec, req)
-	return rec.Result()
+	token, err := goblnet.NewToken(f.subject, f.subAddr, f.lookup.Address(), 0)
+	require.NoError(f.t, err)
+	return "Bearer " + token
+}
+
+func (f *fixture) post(path string, body []byte) *http.Response {
+	return f.do(http.MethodPost, path, body, f.bearer())
 }
 
 func (f *fixture) get(path string) *http.Response {
+	return f.do(http.MethodGet, path, nil, f.bearer())
+}
+
+// do performs a request with an explicit Authorization value; empty
+// auth sends the request bare.
+func (f *fixture) do(method, path string, body []byte, auth string) *http.Response {
 	f.t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	var req *http.Request
+	if body != nil {
+		req = httptest.NewRequest(method, path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+	} else {
+		req = httptest.NewRequest(method, path, nil)
+	}
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
 	rec := httptest.NewRecorder()
 	f.mux.ServeHTTP(rec, req)
 	return rec.Result()
@@ -435,7 +454,7 @@ func TestWhoGet(t *testing.T) {
 	resp := f.get(goblnet.WhoPath)
 	defer resp.Body.Close() //nolint:errcheck
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.NotEmpty(t, resp.Header.Get("Cache-Control"))
+	assert.Equal(t, "private, max-age=300", resp.Header.Get("Cache-Control"), "authorized response must not land in shared caches")
 
 	var got gobl.Envelope
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
@@ -444,6 +463,66 @@ func TestWhoGet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, f.lookup.URI(), p.Iss)
 	assert.Empty(t, p.Aud, "GET who response is not bound to a caller")
+}
+
+func TestRequestAuth(t *testing.T) {
+	f := newFixture(t)
+
+	t.Run("who without a token is rejected", func(t *testing.T) {
+		resp := f.do(http.MethodGet, goblnet.WhoPath, nil, "")
+		defer resp.Body.Close() //nolint:errcheck
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("inbox without a token is rejected", func(t *testing.T) {
+		env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+		body, _ := json.Marshal(env)
+		resp := f.do(http.MethodPost, goblnet.InboxPath, body, "")
+		defer resp.Body.Close() //nolint:errcheck
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("non-bearer scheme is rejected", func(t *testing.T) {
+		resp := f.do(http.MethodGet, goblnet.WhoPath, nil, "Basic dXNlcjpwdw==")
+		defer resp.Body.Close() //nolint:errcheck
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("token bound to another audience is rejected", func(t *testing.T) {
+		token, err := goblnet.NewToken(f.subject, f.subAddr, "other.example", 0)
+		require.NoError(t, err)
+		resp := f.do(http.MethodGet, goblnet.WhoPath, nil, "Bearer "+token)
+		defer resp.Body.Close() //nolint:errcheck
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("token from an unresolvable issuer is rejected", func(t *testing.T) {
+		other := dsig.NewES256Key()
+		token, err := goblnet.NewToken(other, "unknown.example", f.lookup.Address(), 0)
+		require.NoError(t, err)
+		resp := f.do(http.MethodGet, goblnet.WhoPath, nil, "Bearer "+token)
+		defer resp.Body.Close() //nolint:errcheck
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("keys and parties stay open", func(t *testing.T) {
+		resp := f.do(http.MethodGet, goblnet.KeyPath(f.lookup.PrivateKey.ID()), nil, "")
+		defer resp.Body.Close() //nolint:errcheck
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
+func TestInboxRejectsPendingWho(t *testing.T) {
+	// A registrant deferring its own /who disclosure (202) cannot be
+	// confirmed as a sending participant.
+	f := newFixture(t)
+	f.fetcher.errs[f.subAddr.WhoURL()] = goblnet.ErrPending
+
+	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 }
 
 func TestHealth(t *testing.T) {

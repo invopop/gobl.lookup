@@ -45,8 +45,10 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 	setup := domain.New(domain.Deps{
 		Identity:      id,
 		Registrations: reg,
-		Client:        goblnet.NewClient(),
-		Sender:        delivery.New(),
+		// The client and sender authenticate outbound requests as the
+		// lookup itself (bearer request tokens, spec §5.5).
+		Client: goblnet.NewClient(goblnet.WithIdentity(id.Address(), id.PrivateKey)),
+		Sender: delivery.New(id.Address(), id.PrivateKey),
 		// domain.New defaults this to https://<domain> when empty.
 		PublicBaseURL: strings.TrimRight(cfg.PublicBaseURL, "/"),
 		Logger:        slog.Default(),

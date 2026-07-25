@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +55,14 @@ func (d *Identity) JWKS() ([]byte, error) { return d.model.JWKS() }
 
 // PublicKeys returns every key the lookup has published.
 func (d *Identity) PublicKeys() []*dsig.PublicKey { return d.model.PublicKeys }
+
+// VerifyRequest verifies the Authorization header of an inbound who
+// or inbox request (a bearer request token, spec §5.5) and returns
+// the verified requester address. The token's audience must be this
+// lookup and its freshness window must include the current time.
+func (d *Identity) VerifyRequest(ctx context.Context, header string) (goblnet.Address, error) {
+	return d.client.VerifyAuthorization(ctx, header, d.Address())
+}
 
 // PartyEnvelope returns the JSON of the lookup's party wrapped in a
 // self-signed envelope (iss = the lookup's address, no aud), served

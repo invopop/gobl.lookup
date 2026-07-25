@@ -99,9 +99,13 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	if _, err := d.client.Who(ctx, sender); err != nil {
 		reason := "who_failed"
 		msg := "could not resolve sender's public identity"
-		if errors.Is(err, goblnet.ErrNoContent) {
+		switch {
+		case errors.Is(err, goblnet.ErrNoContent):
 			reason = "who_no_content"
 			msg = "sender does not publish a public identity; senders must serve GET /who"
+		case errors.Is(err, goblnet.ErrPending):
+			reason = "who_pending"
+			msg = "sender defers identity disclosure; senders must serve GET /who openly to register"
 		}
 		d.log.Warn("inbox.rejected", "reason", reason, "caller", string(sender), "error", err.Error())
 		return nil, ErrForbidden.WithMessage("%s", msg)

@@ -39,10 +39,14 @@ func handleInbox(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
 			http.Error(w, "invalid envelope JSON", http.StatusBadRequest)
 			return
 		}
+		// The requester (token iss) may be a trusted intermediary
+		// transmitting on the registrant's behalf; the domain resolves
+		// the subject from the envelope's own signature.
 		if _, err := s.Registrations().Register(r.Context(), env); err != nil {
 			writeError(w, err)
 			return
 		}
+		log.Info("inbox.received", "requester", string(requesterFrom(r.Context())))
 		w.WriteHeader(http.StatusAccepted)
 	}
 }

@@ -86,15 +86,28 @@ The domain never imports the transport layer.
 
 ## Endpoints
 
-| Method | Path                                | Purpose                                                  |
-|--------|-------------------------------------|----------------------------------------------------------|
-| POST   | `/.well-known/gobl/inbox`           | Registration entry — must carry an `org.Party` document. |
-| GET    | `/.well-known/gobl/who`             | Lookup's public identity (self-signed party envelope).   |
-| GET    | `/.well-known/gobl/keys/<kid>`      | Single published key.                                    |
-| GET    | `/.well-known/jwks.json`            | Bulk JWK Set (for jwt.io-style tooling).                 |
-| GET    | `/parties/<address>`                | Public registration record by address.                   |
-| GET    | `/parties/<uuid>`                   | Public registration record by envelope UUID.             |
-| GET    | `/healthz`                          | Liveness check.                                          |
+| Method | Path                                | Auth  | Purpose                                                  |
+|--------|-------------------------------------|-------|----------------------------------------------------------|
+| POST   | `/.well-known/gobl/inbox`           | token | Registration entry — must carry an `org.Party` document. |
+| GET    | `/.well-known/gobl/who`             | token | Lookup's identity (self-signed party envelope).          |
+| GET    | `/.well-known/gobl/keys/<kid>`      | open  | Single published key.                                    |
+| GET    | `/.well-known/jwks.json`            | open  | Bulk JWK Set (for jwt.io-style tooling).                 |
+| GET    | `/parties/<address>`                | open  | Public registration record by address.                   |
+| GET    | `/parties/<uuid>`                   | open  | Public registration record by envelope UUID.             |
+| GET    | `/healthz`                          | open  | Liveness check.                                          |
+
+The who and inbox endpoints require a bearer request token (spec
+§5.5) minted from the caller's own published key; requests without
+a valid token get `401`. The token's issuer may be a trusted
+intermediary transmitting on the registrant's behalf — the
+registration subject always comes from the envelope's own
+signature. Key discovery stays open (it is what makes token
+verification possible), and `/parties` remains an open directory of
+registered — hence deliberately public — identities. The lookup's
+own outbound requests (the sender `GET /who` eligibility check and
+countersigned-envelope deliveries) authenticate the same way, as
+`lookup.gobl.org`. Authenticated requests are logged with the
+requester address, forming the request audit log.
 
 ## Quickstart (local dev)
 
