@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/invopop/gobl/cal"
 	"github.com/invopop/gobl/dsig"
@@ -23,13 +24,11 @@ import (
 //	~/.config/gobl.lookup/
 //	├── private.jwk        active signing key (mode 0600)
 //	├── party.json         lookup's own org.Party (served at /who)
-//	├── keys/<kid>.json    each published JWK (served at /keys/<kid>)
-//	└── allow.json         optional caller allow-list (usually absent)
+//	└── keys/<kid>.json    each published JWK (served at /keys/<kid>)
 const (
 	PrivateKeyFile = "private.jwk"
 	PartyFile      = "party.json"
 	KeysDirName    = "keys"
-	AllowFile      = "allow.json"
 )
 
 // LoadIdentity reads an identity from configDir. Returns an error if
@@ -89,11 +88,6 @@ func LoadIdentity(configDir string) (*models.Identity, error) {
 	}
 	id.PublicKeys = keys
 
-	id.Allow, err = loadAllow(filepath.Join(configDir, AllowFile))
-	if err != nil {
-		return nil, err
-	}
-
 	return id, nil
 }
 
@@ -131,7 +125,10 @@ func InitIdentity(opts ScaffoldOptions) (*models.Identity, error) {
 
 	priv := dsig.NewES256Key()
 	pub := priv.Public()
-	from := cal.TimestampNow()
+	// Floor valid_from to the second: signature `iat` claims carry
+	// whole seconds, so a sub-second valid_from would reject a
+	// signature made within the same second the key was generated.
+	from := cal.TimestampOf(time.Now().UTC().Truncate(time.Second))
 	pub.ValidFrom = &from
 
 	if err := writeJSON(filepath.Join(opts.ConfigDir, PrivateKeyFile), priv, 0o600); err != nil {
@@ -180,29 +177,6 @@ func loadKeys(dir string) ([]*dsig.PublicKey, error) {
 			return nil, fmt.Errorf("repos: keys/%s has no kid", e.Name())
 		}
 		out = append(out, pk)
-	}
-	return out, nil
-}
-
-func loadAllow(path string) ([]net.Address, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("repos: read allow.json: %w", err)
-	}
-	var raw []string
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("repos: parse allow.json: %w", err)
-	}
-	out := make([]net.Address, 0, len(raw))
-	for _, s := range raw {
-		a, err := net.ParseAddress(s)
-		if err != nil {
-			return nil, fmt.Errorf("repos: allow.json contains invalid address %q: %w", s, err)
-		}
-		out = append(out, a)
 	}
 	return out, nil
 }

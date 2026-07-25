@@ -11,6 +11,7 @@ import (
 
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/dsig"
+	"github.com/invopop/gobl/head"
 	"github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/note"
 	"github.com/invopop/gobl/uuid"
@@ -25,7 +26,9 @@ func buildEnvelope(t *testing.T) *gobl.Envelope {
 	env, err := gobl.Envelop(msg)
 	require.NoError(t, err)
 	key := dsig.NewES256Key()
-	require.NoError(t, env.Sign(key, net.Address("alice.example").URI(), net.Address("lookup.example").URI()))
+	require.NoError(t, env.Sign(key,
+		head.WithIssuer(net.Address("alice.example").URI()),
+		head.WithAudience(net.Address("lookup.example").URI())))
 	return env
 }
 

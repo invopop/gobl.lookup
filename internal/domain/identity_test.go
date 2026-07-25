@@ -1,6 +1,7 @@
 package domain_test
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"testing"
@@ -39,14 +40,22 @@ func newTestIdentity(t *testing.T) *domain.Identity {
 func TestPartyEnvelopeIsSelfSigned(t *testing.T) {
 	id := newTestIdentity(t)
 
-	env, err := id.PartyEnvelope(cbc.URI("gobl:alice.example"))
+	data, err := id.PartyEnvelope()
 	require.NoError(t, err)
+	env := new(gobl.Envelope)
+	require.NoError(t, json.Unmarshal(data, env))
 	require.Len(t, env.Signatures, 1)
 
 	p, err := head.SignedPayload(env.Signatures[0])
 	require.NoError(t, err)
 	assert.Equal(t, id.URI(), p.Iss)
-	assert.Equal(t, cbc.URI("gobl:alice.example"), p.Aud)
+	assert.Empty(t, p.Aud, "a GET who response has no caller to bind to")
+
+	// The envelope is signed once and cached: a second call returns
+	// the identical bytes.
+	again, err := id.PartyEnvelope()
+	require.NoError(t, err)
+	assert.Equal(t, data, again)
 }
 
 func TestCounterSign(t *testing.T) {
@@ -57,12 +66,14 @@ func TestCounterSign(t *testing.T) {
 	msg.SetUUID(uuid.V7())
 	env, err := gobl.Envelop(msg)
 	require.NoError(t, err)
-	require.NoError(t, env.Sign(id.Model().PrivateKey, cbc.URI("gobl:alice.example"), id.URI()))
+	require.NoError(t, env.Sign(id.Model().PrivateKey,
+		head.WithIssuer(cbc.URI("gobl:alice.example")),
+		head.WithAudience(id.URI())))
 
 	// Authority countersignature.
 	require.NoError(t, id.CounterSign(env, domain.CounterSignOptions{
-		Subject: net.Address("alice.example"),
-		Scope:   head.ScopeRegistered,
+		Subject:  net.Address("alice.example"),
+		Verifier: net.Address("kyc.example"),
 	}))
 	require.Len(t, env.Signatures, 2)
 
@@ -70,7 +81,7 @@ func TestCounterSign(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id.URI(), p.Iss)
 	assert.Equal(t, cbc.URI("gobl:alice.example"), p.Aud)
-	assert.Equal(t, head.ScopeRegistered, p.Scope)
+	assert.Equal(t, cbc.URI("gobl:kyc.example"), p.Verifier)
 }
 
 func TestCounterSignNilEnvelope(t *testing.T) {

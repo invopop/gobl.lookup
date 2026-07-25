@@ -28,7 +28,7 @@ func NewMux(setup *domain.Setup, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST "+goblnet.InboxPath, handleInbox(setup, log))
-	mux.HandleFunc("POST "+goblnet.WhoPath, handleWho(setup, log))
+	mux.HandleFunc("GET "+goblnet.WhoPath, handleWho(setup, log))
 	mux.HandleFunc("GET "+goblnet.KeysPath+"/{kid}", handleKey(setup, log))
 	mux.HandleFunc("GET "+goblnet.JWKSPath, handleJWKS(setup, log))
 	mux.HandleFunc("GET /parties/{key}", handleParty(setup, log))

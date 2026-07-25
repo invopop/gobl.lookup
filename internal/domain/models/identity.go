@@ -3,7 +3,6 @@ package models
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 
 	"github.com/invopop/gobl/cbc"
@@ -27,11 +26,8 @@ type Identity struct {
 	// /.well-known/gobl/keys/<kid> and aggregated at /.well-known/jwks.json.
 	PublicKeys []*dsig.PublicKey
 	// Party is the lookup's own org.Party served at /.well-known/gobl/who.
-	// Stored unsigned on disk; signed per-request.
+	// Stored unsigned on disk; signed once at first serve.
 	Party *org.Party
-	// Allow gates inbox / who requests by caller address. Empty means
-	// "accept any verified caller".
-	Allow []net.Address
 }
 
 // Address returns the lookup's address.
@@ -39,15 +35,6 @@ func (i *Identity) Address() net.Address { return i.Domain }
 
 // URI returns the gobl: URI form of the lookup's address.
 func (i *Identity) URI() cbc.URI { return i.Domain.URI() }
-
-// Allowed reports whether caller is permitted by the allow-list. An
-// empty allow-list permits any caller.
-func (i *Identity) Allowed(caller net.Address) bool {
-	if len(i.Allow) == 0 {
-		return true
-	}
-	return slices.Contains(i.Allow, caller)
-}
 
 // FindKey returns the public key whose kid matches, or nil.
 func (i *Identity) FindKey(kid string) *dsig.PublicKey {

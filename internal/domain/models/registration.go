@@ -7,7 +7,6 @@ import (
 
 	"github.com/invopop/couch"
 	"github.com/invopop/gobl"
-	"github.com/invopop/gobl/cbc"
 	"github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/uuid"
 )
@@ -40,7 +39,7 @@ const (
 type Registration struct {
 	couch.Model
 	Address               net.Address    `json:"address"`
-	Scope                 cbc.Key        `json:"scope,omitempty"`
+	Verifier              net.Address    `json:"verifier,omitempty"`
 	Status                Status         `json:"status"`
 	IncomingEnvelopeUUID  uuid.UUID      `json:"incoming_envelope_uuid"`
 	ReceivedAt            time.Time      `json:"received_at"`

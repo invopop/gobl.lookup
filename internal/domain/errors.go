@@ -21,8 +21,9 @@ var (
 	// ErrUnauthorized is returned when an envelope's signature or
 	// audience does not authenticate the caller.
 	ErrUnauthorized = NewError("unauthorized")
-	// ErrForbidden is returned when an authenticated caller is not
-	// permitted by the allow-list.
+	// ErrForbidden is returned when an authenticated caller does not
+	// qualify (e.g. a registration from an address that publishes no
+	// public identity).
 	ErrForbidden = NewError("forbidden")
 	// ErrNotFound is returned when no record matches the request.
 	ErrNotFound = NewError("not-found")

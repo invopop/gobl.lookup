@@ -1,6 +1,6 @@
 // gobl.lookup is the GOBL Net Authority registry service. It
 // accepts party registrations on the standard `/inbox` endpoint,
-// countersigns the envelope with an Authority-level scope, and
+// countersigns the envelope as a registration Authority, and
 // posts the result back to the sender's own `/inbox`. The
 // registry is backed by CouchDB.
 package main

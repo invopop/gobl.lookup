@@ -1,53 +1,29 @@
 package web
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"log/slog"
 	"net/http"
-
-	"github.com/invopop/gobl"
 
 	"github.com/invopop/gobl.lookup/internal/domain"
 )
 
-// handleWho implements the authenticated mutual party exchange: the
-// caller POSTs a signed envelope (iss=caller, aud=lookup); the domain
-// verifies it, applies the allow-list, and returns the lookup's own
-// party envelope signed with iss/aud reversed.
+// whoCacheControl allows clients to cache the static party envelope
+// briefly; the TTL bounds how quickly key or party changes are
+// observed by verifiers.
+const whoCacheControl = "public, max-age=300"
+
+// handleWho serves the lookup's public identity: the party envelope
+// self-signed by the lookup, the same static document for every
+// caller.
 func handleWho(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, inboxMaxBody)
-		body, err := io.ReadAll(r.Body)
+	return func(w http.ResponseWriter, _ *http.Request) {
+		body, err := s.Identity().PartyEnvelope()
 		if err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				log.Warn("who.rejected", "reason", "body_too_large", "remote", r.RemoteAddr)
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			log.Warn("who.rejected", "reason", "read_body", "remote", r.RemoteAddr, "error", err.Error())
-			http.Error(w, "could not read body", http.StatusBadRequest)
+			log.Error("who.sign_failed", "error", err.Error())
+			http.Error(w, "could not prepare identity", http.StatusInternalServerError)
 			return
 		}
-		env := new(gobl.Envelope)
-		if err := json.Unmarshal(body, env); err != nil {
-			log.Warn("who.rejected", "reason", "bad_body", "remote", r.RemoteAddr)
-			http.Error(w, "invalid envelope JSON", http.StatusBadRequest)
-			return
-		}
-		out, err := s.Identity().Exchange(r.Context(), env)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		resp, err := json.Marshal(out)
-		if err != nil {
-			log.Error("who.encode_failed", "error", err.Error())
-			http.Error(w, "could not encode response", http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusOK, resp)
+		w.Header().Set("Cache-Control", whoCacheControl)
+		writeJSON(w, http.StatusOK, body)
 	}
 }

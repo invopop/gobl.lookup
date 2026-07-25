@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Every Authority countersignature now carries a 90-day `exp` claim; parties renew by re-registering before it passes. A renewal with an unchanged party document (same digest) is countersigned at the party's current scope — `verified` stays `verified` — while changed party data drops back to `registered` and clears `verified_at`.
+- `/.well-known/gobl/who` is now an open `GET` serving the lookup's self-signed party envelope (signed once per process, `Cache-Control: max-age=300`), replacing the authenticated `POST` exchange.
+- Registration now requires the sender to serve its own public identity: the inbox resolves `GET /who` on the sender's address (re-fetching its published key) before countersigning. A `204 No Content` — a receive-only account — or an unresolvable identity rejects the registration with `403 Forbidden`.
+- Allow-list support (`allow.json`, `models.Identity.Allow`) is removed; the sender `/who` check is the gate on registrations.
+- Updated to the current `gobl` net API: `Envelope.Sign` options (`head.WithIssuer`/`WithAudience`/`WithScope`) and `net.Client.Who`.
 - Identity key files under `keys/` no longer need to be named after their kid — the kid is read from the JWK itself, and any `*.json` file is accepted (`Init` still writes `<kid>.json`). This lets a deployment mount the published key at a fixed path (e.g. `keys/public.json`) without encoding the kid in the filename.
 - Persistence now uses the shared [`github.com/invopop/couch`](https://github.com/invopop/couch) library: `models.Registration` embeds `couch.Model` (gaining `created_at`/`updated_at` and revision handling), and the CouchDB store uses `couch.Client`/`couch.Store`/`couch.Fetch` and a `couch.Design` for the by-UUID view. The registration database is the couch client's prefix (`COUCHDB_DATABASE`).
 - Configuration is now read from the environment (`CONFIG_DIR`, `COUCHDB_URL` or the split `COUCHDB_SCHEME/HOST/PORT/USERNAME/PASSWORD`, `COUCHDB_DATABASE`, `HTTP_PORT`/`PORT`, `PUBLIC_BASE_URL`, `LOG_JSON`) so the service can be configured — and its CouchDB password injected from a secret — the way the cluster provides config. The equivalent CLI flags still work and override the environment. Env var names match the sibling services (silo/access).
