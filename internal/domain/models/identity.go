@@ -34,6 +34,9 @@ type Identity struct {
 func (i *Identity) Address() net.Address { return i.Domain }
 
 // URI returns the gobl: URI form of the lookup's address.
+// URI returns the gobl: scheme form of the lookup's address, for
+// multi-scheme contexts such as org.Endpoint lists. Signed claims
+// carry the bare address instead.
 func (i *Identity) URI() cbc.URI { return i.Domain.URI() }
 
 // FindKey returns the public key whose kid matches, or nil.

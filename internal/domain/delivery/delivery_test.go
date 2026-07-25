@@ -33,8 +33,8 @@ func buildEnvelope(t *testing.T) *gobl.Envelope {
 	require.NoError(t, err)
 	key := dsig.NewES256Key()
 	require.NoError(t, env.Sign(key,
-		head.WithIssuer(net.Address("alice.example").URI()),
-		head.WithAudience(net.Address("lookup.example").URI())))
+		head.WithIssuer("alice.example"),
+		head.WithAudience("lookup.example")))
 	return env
 }
 

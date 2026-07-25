@@ -75,7 +75,7 @@ func (d *Identity) PartyEnvelope() ([]byte, error) {
 			d.partyErr = fmt.Errorf("identity: envelop party: %w", err)
 			return
 		}
-		if err := env.Sign(d.model.PrivateKey, head.WithIssuer(d.URI())); err != nil {
+		if err := env.Sign(d.model.PrivateKey, head.WithIssuer(d.Address().String())); err != nil {
 			d.partyErr = fmt.Errorf("identity: sign party: %w", err)
 			return
 		}
@@ -106,12 +106,12 @@ func (d *Identity) CounterSign(env *gobl.Envelope, opts CounterSignOptions) erro
 		return errors.New("identity: cannot countersign a nil envelope")
 	}
 	signOpts := []head.SignOption{
-		head.WithIssuer(d.URI()),
-		head.WithAudience(opts.Subject.URI()),
+		head.WithIssuer(d.Address().String()),
+		head.WithAudience(opts.Subject.String()),
 		head.WithExpiration(time.Now().Add(endorsementTTL)),
 	}
 	if opts.Verifier != "" {
-		signOpts = append(signOpts, head.WithVerifier(opts.Verifier.URI()))
+		signOpts = append(signOpts, head.WithVerifier(opts.Verifier.String()))
 	}
 	return env.Sign(d.model.PrivateKey, signOpts...)
 }

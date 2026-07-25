@@ -127,14 +127,14 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{t: t, lookup: lookup, subject: subKey, subAddr: subAddr, fetcher: fetcher, registry: reg, sender: send, mux: mux}
 	// The registration flow resolves the sender's own GET /who, so the
 	// fixture serves a self-signed identity for the subject by default.
-	who, _ := json.Marshal(f.signPartyEnvelope(subAddr.URI(), ""))
+	who, _ := json.Marshal(f.signPartyEnvelope(subAddr.String(), ""))
 	fetcher.data[subAddr.WhoURL()] = who
 	return f
 }
 
 // signPartyEnvelope builds a fresh signed envelope from subject with
 // the given iss/aud.
-func (f *fixture) signPartyEnvelope(iss, aud cbc.URI) *gobl.Envelope {
+func (f *fixture) signPartyEnvelope(iss, aud string) *gobl.Envelope {
 	f.t.Helper()
 	party := &org.Party{
 		Name:      "Alice",
@@ -202,7 +202,7 @@ func (f *fixture) do(method, path string, body []byte, auth string) *http.Respon
 
 func TestInboxAcceptsRegistration(t *testing.T) {
 	f := newFixture(t)
-	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -221,8 +221,8 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	authSig := rec.CountersignedEnvelope.Signatures[1]
 	p, err := head.SignedPayload(authSig)
 	require.NoError(t, err)
-	assert.Equal(t, f.lookup.URI(), p.Iss)
-	assert.Equal(t, f.subAddr.URI(), p.Aud)
+	assert.Equal(t, f.lookup.Address().String(), p.Iss)
+	assert.Equal(t, f.subAddr.String(), p.Aud)
 	assert.Empty(t, p.Verifier, "initial countersignature carries no verifier claim")
 
 	// Discovery link stamped on the (mutable) header.
@@ -241,7 +241,7 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 
 func TestInboxRejectsMissingAud(t *testing.T) {
 	f := newFixture(t)
-	env := f.signPartyEnvelope(f.subAddr.URI(), "")
+	env := f.signPartyEnvelope(f.subAddr.String(), "")
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -250,7 +250,7 @@ func TestInboxRejectsMissingAud(t *testing.T) {
 
 func TestInboxRejectsWrongAud(t *testing.T) {
 	f := newFixture(t)
-	env := f.signPartyEnvelope(f.subAddr.URI(), goblnet.Address("someone.else").URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), "someone.else")
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -264,8 +264,8 @@ func TestInboxRejectsNonPartyDocument(t *testing.T) {
 	env, err := gobl.Envelop(msg)
 	require.NoError(t, err)
 	require.NoError(t, env.Sign(f.subject,
-		head.WithIssuer(f.subAddr.URI()),
-		head.WithAudience(f.lookup.URI())))
+		head.WithIssuer(f.subAddr.String()),
+		head.WithAudience(f.lookup.Address().String())))
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -298,8 +298,8 @@ func TestInboxRejectsUnknownSigner(t *testing.T) {
 	env, err := gobl.Envelop(party)
 	require.NoError(t, err)
 	require.NoError(t, env.Sign(other,
-		head.WithIssuer(goblnet.Address("mallory.example").URI()),
-		head.WithAudience(f.lookup.URI())))
+		head.WithIssuer("mallory.example"),
+		head.WithAudience(f.lookup.Address().String())))
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -309,7 +309,7 @@ func TestInboxRejectsUnknownSigner(t *testing.T) {
 func TestReRegistrationDropsVerifier(t *testing.T) {
 	f := newFixture(t)
 	// First registration.
-	env1 := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env1 := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body1, _ := json.Marshal(env1)
 	f.post(goblnet.InboxPath, body1).Body.Close() //nolint:errcheck
 
@@ -323,7 +323,7 @@ func TestReRegistrationDropsVerifier(t *testing.T) {
 
 	// Re-register: the verifier must be dropped — prior KYC no
 	// longer applies to changed party data.
-	env2 := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env2 := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body2, _ := json.Marshal(env2)
 	f.post(goblnet.InboxPath, body2).Body.Close() //nolint:errcheck
 
@@ -340,8 +340,8 @@ func (f *fixture) signSameParty(party *org.Party) *gobl.Envelope {
 	env, err := gobl.Envelop(party)
 	require.NoError(f.t, err)
 	require.NoError(f.t, env.Sign(f.subject,
-		head.WithIssuer(f.subAddr.URI()),
-		head.WithAudience(f.lookup.URI())))
+		head.WithIssuer(f.subAddr.String()),
+		head.WithAudience(f.lookup.Address().String())))
 	return env
 }
 
@@ -380,14 +380,14 @@ func TestRenewalPreservesVerifier(t *testing.T) {
 	sigs := rec2.CountersignedEnvelope.Signatures
 	p, err := head.SignedPayload(sigs[len(sigs)-1])
 	require.NoError(t, err)
-	assert.Equal(t, cbc.URI("gobl:kyc.example"), p.Verifier)
+	assert.Equal(t, "kyc.example", p.Verifier)
 	assert.Greater(t, p.ExpiresAt, time.Now().Add(89*24*time.Hour).Unix())
 	assert.Less(t, p.ExpiresAt, time.Now().Add(91*24*time.Hour).Unix())
 }
 
 func TestPartiesLookupByUUID(t *testing.T) {
 	f := newFixture(t)
-	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body, _ := json.Marshal(env)
 	f.post(goblnet.InboxPath, body).Body.Close() //nolint:errcheck
 	_ = f.waitForDelivery(2 * time.Second)
@@ -403,7 +403,7 @@ func TestPartiesLookupByUUID(t *testing.T) {
 
 func TestPartiesLookupByAddress(t *testing.T) {
 	f := newFixture(t)
-	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body, _ := json.Marshal(env)
 	f.post(goblnet.InboxPath, body).Body.Close() //nolint:errcheck
 
@@ -461,7 +461,7 @@ func TestWhoGet(t *testing.T) {
 	require.Len(t, got.Signatures, 1)
 	p, err := head.SignedPayload(got.Signatures[0])
 	require.NoError(t, err)
-	assert.Equal(t, f.lookup.URI(), p.Iss)
+	assert.Equal(t, f.lookup.Address().String(), p.Iss)
 	assert.Empty(t, p.Aud, "GET who response is not bound to a caller")
 }
 
@@ -475,7 +475,7 @@ func TestRequestAuth(t *testing.T) {
 	})
 
 	t.Run("inbox without a token is rejected", func(t *testing.T) {
-		env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+		env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 		body, _ := json.Marshal(env)
 		resp := f.do(http.MethodPost, goblnet.InboxPath, body, "")
 		defer resp.Body.Close() //nolint:errcheck
@@ -518,7 +518,7 @@ func TestInboxRejectsPendingWho(t *testing.T) {
 	f := newFixture(t)
 	f.fetcher.errs[f.subAddr.WhoURL()] = goblnet.ErrPending
 
-	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -537,7 +537,7 @@ func TestInboxRejectsSenderWithoutWho(t *testing.T) {
 	// The sender's key resolves, but its GET /who does not.
 	delete(f.fetcher.data, f.subAddr.WhoURL())
 
-	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
@@ -551,7 +551,7 @@ func TestInboxRejectsReceiveOnlySender(t *testing.T) {
 	delete(f.fetcher.data, f.subAddr.WhoURL())
 	f.fetcher.errs[f.subAddr.WhoURL()] = goblnet.ErrNoContent
 
-	env := f.signPartyEnvelope(f.subAddr.URI(), f.lookup.URI())
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck

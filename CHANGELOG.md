@@ -10,7 +10,7 @@
 - Outbound requests authenticate as the lookup itself: the sender `GET /who` eligibility check and countersigned-envelope deliveries carry bearer request tokens. A registrant answering its own `/who` with `202` (deferred disclosure) is rejected with `403` — senders must disclose openly to register.
 - Registration now requires the sender to serve its own public identity: the inbox resolves `GET /who` on the sender's address (re-fetching its published key) before countersigning. A `204 No Content` — a receive-only account — or an unresolvable identity rejects the registration with `403 Forbidden`.
 - Allow-list support (`allow.json`, `models.Identity.Allow`) is removed; the sender `/who` check is the gate on registrations.
-- Updated to the current `gobl` net API: `Envelope.Sign` options (`head.WithIssuer`/`WithAudience`/`WithVerifier`) and `net.Client.Who`.
+- Updated to the current `gobl` net API: `Envelope.Sign` options (`head.WithIssuer`/`WithAudience`/`WithVerifier`) and `net.Client.Who`. Signed `iss`/`aud`/`verifier` claims carry bare GOBL Net addresses (FQDNs) rather than `gobl:` URIs; the scheme remains only on `org.Endpoint` URIs.
 - Identity key files under `keys/` no longer need to be named after their kid — the kid is read from the JWK itself, and any `*.json` file is accepted (`Init` still writes `<kid>.json`). This lets a deployment mount the published key at a fixed path (e.g. `keys/public.json`) without encoding the kid in the filename.
 - Persistence now uses the shared [`github.com/invopop/couch`](https://github.com/invopop/couch) library: `models.Registration` embeds `couch.Model` (gaining `created_at`/`updated_at` and revision handling), and the CouchDB store uses `couch.Client`/`couch.Store`/`couch.Fetch` and a `couch.Design` for the by-UUID view. The registration database is the couch client's prefix (`COUCHDB_DATABASE`).
 - Configuration is now read from the environment (`CONFIG_DIR`, `COUCHDB_URL` or the split `COUCHDB_SCHEME/HOST/PORT/USERNAME/PASSWORD`, `COUCHDB_DATABASE`, `HTTP_PORT`/`PORT`, `PUBLIC_BASE_URL`, `LOG_JSON`) so the service can be configured — and its CouchDB password injected from a secret — the way the cluster provides config. The equivalent CLI flags still work and override the environment. Env var names match the sibling services (silo/access).
@@ -34,5 +34,5 @@
 
 ### Security
 
-- Inbox `aud` is required: an envelope POSTed to `/inbox` MUST be signed with `aud == gobl:lookup.<domain>`. Envelopes without an audience, or bound to a different audience, are rejected with 401 (replay protection — mirrors the recent gobl.dev inbox tightening).
+- Inbox `aud` is required: an envelope POSTed to `/inbox` MUST be signed with `aud` equal to the lookup’s address. Envelopes without an audience, or bound to a different audience, are rejected with 401 (replay protection — mirrors the recent gobl.dev inbox tightening).
 - Registration envelope MUST contain an `org.Party` document; anything else is rejected with 422.

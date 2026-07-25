@@ -81,8 +81,10 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		d.log.Warn("inbox.rejected", "reason", "aud_missing", "caller", string(sender))
 		return nil, ErrUnauthorized.WithMessage("envelope must carry an aud equal to this lookup")
 	}
-	if p.Aud != d.identity.URI() {
-		d.log.Warn("inbox.rejected", "reason", "aud_mismatch", "caller", string(sender), "aud", string(p.Aud))
+	// Canonicalize so U-Label or trailing-dot forms compare equal,
+	// mirroring gobl's VerifyEnvelope.
+	if aud, aerr := goblnet.ParseAddress(p.Aud); aerr != nil || aud != d.identity.Address() {
+		d.log.Warn("inbox.rejected", "reason", "aud_mismatch", "caller", string(sender), "aud", p.Aud)
 		return nil, ErrUnauthorized.WithMessage("envelope audience does not match this lookup")
 	}
 	// Registration entry must carry an org.Party — that's the
@@ -238,7 +240,7 @@ func carriesSignatureFrom(env *gobl.Envelope, addr goblnet.Address) bool {
 		if err != nil {
 			continue
 		}
-		if issuer, err := goblnet.ParseAddress(p.Iss.Opaque()); err == nil && issuer == addr {
+		if issuer, err := goblnet.ParseAddress(p.Iss); err == nil && issuer == addr {
 			return true
 		}
 	}

@@ -19,8 +19,9 @@ Copyright 2026 [Invopop S.L.](https://invopop.com).
 1. A GOBL Net node (e.g. a `gobl.dev` operator at
    `alice.example`) signs an envelope containing its `org.Party`
    and POSTs it to lookup's `/.well-known/gobl/inbox`. The
-   envelope's signed `iss=gobl:alice.example`,
-   `aud=gobl:lookup.gobl.org`.
+   envelope's signed `iss=alice.example`,
+   `aud=lookup.gobl.org` (signed claims carry bare addresses — GOBL
+   Net is implied).
 2. Lookup verifies the signature, then confirms the sender checks
    out as a *sending* participant: it performs `GET /who` on
    `alice.example` (re-fetching her published key in the process)
@@ -28,8 +29,8 @@ Copyright 2026 [Invopop S.L.](https://invopop.com).
    marks a receive-only account and rejects the registration with
    `403 Forbidden`.
 3. Lookup persists the envelope in CouchDB, countersigns it with
-   an Authority signature (`iss=gobl:lookup.gobl.org`,
-   `aud=gobl:alice.example`, `exp` = 90 days
+   an Authority signature (`iss=lookup.gobl.org`,
+   `aud=alice.example`, `exp` = 90 days
    out), and POSTs the **countersigned** envelope back to
    `https://alice.example/.well-known/gobl/inbox` as a follow-up
    message. The original POST is acknowledged with the standard

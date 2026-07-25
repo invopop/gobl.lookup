@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/invopop/gobl"
-	"github.com/invopop/gobl/cbc"
 	"github.com/invopop/gobl/head"
 	"github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/note"
@@ -48,7 +47,7 @@ func TestPartyEnvelopeIsSelfSigned(t *testing.T) {
 
 	p, err := head.SignedPayload(env.Signatures[0])
 	require.NoError(t, err)
-	assert.Equal(t, id.URI(), p.Iss)
+	assert.Equal(t, id.Address().String(), p.Iss)
 	assert.Empty(t, p.Aud, "a GET who response has no caller to bind to")
 
 	// The envelope is signed once and cached: a second call returns
@@ -67,8 +66,8 @@ func TestCounterSign(t *testing.T) {
 	env, err := gobl.Envelop(msg)
 	require.NoError(t, err)
 	require.NoError(t, env.Sign(id.Model().PrivateKey,
-		head.WithIssuer(cbc.URI("gobl:alice.example")),
-		head.WithAudience(id.URI())))
+		head.WithIssuer("alice.example"),
+		head.WithAudience(id.Address().String())))
 
 	// Authority countersignature.
 	require.NoError(t, id.CounterSign(env, domain.CounterSignOptions{
@@ -79,9 +78,9 @@ func TestCounterSign(t *testing.T) {
 
 	p, err := head.SignedPayload(env.Signatures[1])
 	require.NoError(t, err)
-	assert.Equal(t, id.URI(), p.Iss)
-	assert.Equal(t, cbc.URI("gobl:alice.example"), p.Aud)
-	assert.Equal(t, cbc.URI("gobl:kyc.example"), p.Verifier)
+	assert.Equal(t, id.Address().String(), p.Iss)
+	assert.Equal(t, "alice.example", p.Aud)
+	assert.Equal(t, "kyc.example", p.Verifier)
 }
 
 func TestCounterSignNilEnvelope(t *testing.T) {
