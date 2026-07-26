@@ -42,10 +42,10 @@ Copyright 2026 [Invopop S.L.](https://invopop.com).
 
 No new protocol endpoints — registration uses the standard GOBL
 Net `/inbox` POST in both directions. Marking a registration as
-verified (spec §5.3, the `verifier` claim) is operator-driven via
-`gobl.lookup verify` today; the self-service flow it will grow into
-is specified in [How verification works](#how-verification-works)
-below.
+verified (spec §5.3, the `verifier` claim) happens automatically
+when the envelope carries a countersignature from an accepted
+verification provider; the full self-service flow is specified in
+[How verification works](#how-verification-works) below.
 
 ### Endorsement lifetime and renewal
 
