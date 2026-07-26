@@ -41,11 +41,11 @@ Copyright 2026 [Invopop S.L.](https://invopop.com).
    `net.Client.VerifySender`.
 
 No new protocol endpoints — registration uses the standard GOBL
-Net `/inbox` POST in both directions. A future revision will add a
-link on the countersigned envelope pointing the subject at a full
-KYC flow to mark the registration as verified (spec §5.3, the
-`verifier` claim); for now the upgrade is operator-driven via
-`gobl.lookup verify`.
+Net `/inbox` POST in both directions. Marking a registration as
+verified (spec §5.3, the `verifier` claim) is operator-driven via
+`gobl.lookup verify` today; the self-service flow it will grow into
+is specified in [How verification works](#how-verification-works)
+below.
 
 ### Endorsement lifetime and renewal
 
@@ -59,6 +59,111 @@ more, in the spirit of EV certificates) continues to evidence the
 KYC. Submitting changed party data is a fresh registration — the
 verifier is dropped and KYC must be repeated.
 
+
+## How verification works
+
+> **Status: design.** The flow below is the agreed target for
+> self-service verification. Today only the final signing step
+> exists (the operator-driven `gobl.lookup verify` command); the
+> web flow, email OTP, verifier hand-off, and auto-verify are not
+> yet implemented — see the gap list at the end of this section.
+
+Verification upgrades a *registered* identity to *verified* by
+adding two things to the party envelope: a countersignature from a
+KYC/KYB provider ("verifier", e.g. `didit.gobl.org`), and a fresh
+lookup countersignature carrying the `verifier` claim that points
+at it. The registry orchestrates; the verifier performs and charges
+for the actual checks; the protocol carries the results as plain
+inbox deliveries.
+
+1. **Start.** A representative of the registered party opens
+   `https://lookup.gobl.org/verify/<address>`. The address MUST
+   already be registered (unregistered addresses are pointed at
+   the registration flow first) and its party MUST publish at
+   least one email address — the flow has no other way to reach a
+   human connected to the party.
+2. **Email OTP.** Lookup sends a one-time code to an email chosen
+   from the party's published `emails`. This does not verify the
+   *business* — that is the verifier's job — it gates the flow:
+   only someone with access to the party's own published mailbox
+   can start (and pay for) verification, so third parties cannot
+   spend a subject's verification budget or spam providers on its
+   behalf. Domain control was already proven at registration by
+   the signed envelope. OTP attempts are rate-limited per address.
+3. **Choose a verifier.** The user picks from the registry's
+   configured trusted-verifier list (the same list the registry is
+   willing to name in `verifier` claims). Each entry shows the
+   provider's published verification policy — which checks are
+   performed, price, and countersignature lifetime — so the trust
+   a receiver will later infer from the verifier's name is
+   inspectable up front.
+4. **Session hand-off.** Lookup POSTs the party's **stored,
+   countersigned envelope** to the verifier's session API in the
+   background, authenticated with a request token for
+   `lookup.gobl.org` (spec §5.5). Sending the stored envelope
+   pins the verification to an exact `uuid` + `dig`: the verifier
+   MUST countersign those bytes, so the checks and the eventual
+   signature cannot drift apart. The verifier answers with an
+   opaque, single-use session URL (or an error if it cannot serve
+   the party's jurisdiction); lookup redirects the user's browser
+   to it. Session URLs are unguessable on purpose —
+   `/verify/<address>` alone would let anyone walk into a session
+   holding another party's data.
+5. **The verifier's process.** On the verifier's own pages (e.g.
+   `https://didit.gobl.org/...`), the user provides the company
+   representative's personal contact details and payment. Payment
+   is deliberately part of the KYC surface — cardholder data is
+   itself a fraud signal — and keeps verification revenue entirely
+   on the verifier's side: the registry stays free. From here the
+   provider runs its usual process (document checks, liveness,
+   registry/UBO lookups, AML screening).
+6. **Countersign and return.** On success the verifier
+   countersigns the envelope from step 4 (`iss=<verifier>`,
+   `aud=<subject>`, `exp` a year or more — spec §5.3) and POSTs
+   the envelope back to lookup's standard `/inbox` with its own
+   request token. To the inbox this is an ordinary renewal: same
+   digest, first signature still the subject's, one extra
+   countersignature aboard. Failed or abandoned sessions simply
+   never produce a countersignature; sessions expire after a few
+   days and the verifier SHOULD notify lookup so the flow's status
+   page can say so.
+7. **Auto-verify.** When a renewal arrives carrying a valid
+   countersignature from a verifier on the trusted-verifier list,
+   lookup re-countersigns with `verifier=<that address>`
+   automatically — the same act as `gobl.lookup verify`, without
+   the operator. The stored record gains `verifier` +
+   `verified_at`.
+8. **Deliver and publish.** The now twice-countersigned envelope
+   (subject self-signature, verifier countersignature, lookup
+   countersignature naming the verifier) is delivered to the
+   subject's own `/inbox` — the standard registration delivery
+   path. The subject publishes it at its `/who`; only then do
+   receivers see the verified status. The verify status page tells
+   the user this last step is theirs.
+
+Renewal interplay is unchanged: re-registering the identical party
+document keeps the verifier claim; changed party data drops it and
+the party goes through verification again (the verifier's own
+countersignature attests to the *checked* data, not to future
+edits).
+
+**Implementation gaps** (in rough order):
+
+- Trusted-verifier list: registry configuration naming the
+  verifier addresses lookup will offer in step 3 and accept in
+  step 7, with their policy/pricing metadata.
+- Auto-verify on renewal (step 7) — the logic exists as
+  `Registrations.Verify`; it needs the trigger from the inbox path
+  plus the trusted-list check.
+- The `/verify/<address>` web flow: OTP issue/check, verifier
+  picker, redirect, and a status page for pending sessions.
+- The verifier session API contract (step 4): create-session
+  request/response shape shared with bridge implementations like
+  `didit.gobl.org`, including session expiry and failure
+  callbacks.
+- A `head.Link` on the registration delivery pointing the subject
+  at `verify/<address>`, so every registered party discovers the
+  upgrade path.
 
 ## Architecture
 
