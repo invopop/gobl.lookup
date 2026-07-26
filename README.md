@@ -62,11 +62,12 @@ verifier is dropped and KYC must be repeated.
 
 ## How verification works
 
-> **Status: design.** The flow below is the agreed target for
-> self-service verification. Today only the final signing step
-> exists (the operator-driven `gobl.lookup verify` command); the
-> web flow, email OTP, verifier hand-off, and auto-verify are not
-> yet implemented — see the gap list at the end of this section.
+> **Status: partial.** The registry side is implemented: the
+> accepted-verifier list (`--verifiers` / `VERIFIERS`), auto-verify
+> on registrations carrying a provider countersignature, and the
+> `gobl.lookup verify` recovery command. The web flow, email OTP,
+> and verifier session hand-off are not yet implemented — see the
+> gap list at the end of this section.
 
 Verification upgrades a *registered* identity to *verified* by
 adding two things to the party envelope: a countersignature from a
@@ -149,12 +150,12 @@ edits).
 
 **Implementation gaps** (in rough order):
 
-- Trusted-verifier list: registry configuration naming the
-  verifier addresses lookup will offer in step 3 and accept in
-  step 7, with their policy/pricing metadata.
-- Auto-verify on renewal (step 7) — the logic exists as
-  `Registrations.Verify`; it needs the trigger from the inbox path
-  plus the trusted-list check.
+- Policy/pricing metadata for the accepted-verifier list (the
+  addresses themselves are configured via `--verifiers` /
+  `VERIFIERS`, and step 7's auto-verify is implemented: a
+  registration or renewal carrying a valid countersignature from an
+  accepted provider is verified on arrival, with the crypto checked
+  against the provider's published key first).
 - The `/verify/<address>` web flow: OTP issue/check, verifier
   picker, redirect, and a status page for pending sessions.
 - The verifier session API contract (step 4): create-session
@@ -271,7 +272,7 @@ preserve the audit trail across re-registrations.
 |--------------------------------|-----------------------------------------------------------------------------------------|
 | `gobl.lookup init <domain>`    | Scaffold keypair + `party.json` + `keys/<kid>.json`.                                    |
 | `gobl.lookup serve`            | Run the HTTP server (terminates HTTP only; deploy behind a TLS proxy).                   |
-| `gobl.lookup verify <address>` | Mark a registration as identity-verified after out-of-band KYC and re-deliver. `--verifier` names an external verifying authority (default: the lookup itself). |
+| `gobl.lookup verify <address>` | Recovery: re-derive verified status from the accepted-provider countersignatures already on the stored envelope and re-deliver. Normally automatic at registration. |
 | `gobl.lookup version`          | Print service + core gobl versions.                                                     |
 
 The top-level `--json` flag switches operator logs from text to
@@ -295,6 +296,7 @@ equivalent flags override the environment for local use.
 | `COUCHDB_DATABASE`  | `--couchdb-database` | `gobl-lookup` | Database name.                                                      |
 | `HTTP_PORT`/`PORT`  | `--http-port`        | `8080`        | HTTP listen port (`HTTP_PORT` wins over `PORT`).                    |
 | `PUBLIC_BASE_URL`   | `--public-base-url`  | `https://<domain>` | Canonical URL for `/parties/<uuid>` discovery links.          |
+| `VERIFIERS`         | `--verifiers`        | —             | Comma-separated addresses of accepted verification providers (e.g. `didit.gobl.org`). |
 | `LOG_JSON`          | `--json`             | `false`       | Emit structured JSON logs on stderr.                               |
 
 Supply the CouchDB connection either as a single `COUCHDB_URL`

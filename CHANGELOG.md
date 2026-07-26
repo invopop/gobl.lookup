@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Verification is now list-driven and automatic: the registry accepts a configured set of verification providers (`--verifiers` / `VERIFIERS`), and a registration or renewal arriving with a valid countersignature from one of them is verified on arrival — the countersignature is cryptographically checked against the provider's published key before being named (an unreachable key endpoint registers unverified and logs `inbox.auto_verify_unavailable`; the derivation re-runs on renewal). `gobl.lookup verify <address>` loses the `--verifier` flag and becomes a recovery command that re-derives the verifier from the stored envelope, e.g. after a provider is added to the accepted list. The discovery link stamped on countersigned envelopes uses the standard `verification` category (the previous `authority` value failed envelope validation on re-signing).
+
 - Transient failures now answer `503 Service Unavailable` instead of
   a definitive 4xx: an unreachable requester key endpoint during
   token verification (log reason `token_unavailable`), and an

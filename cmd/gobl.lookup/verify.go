@@ -16,20 +16,20 @@ import (
 
 func verifyCmd() *cobra.Command {
 	cfg := config.FromEnv()
-	var verifier string
 	cmd := &cobra.Command{
 		Use:   "verify <address>",
-		Short: "Mark a registration as identity-verified after out-of-band KYC",
-		Long: `Load the existing registration for <address>, countersign the
-stored party envelope with a verifier claim naming the authority
-that performed the KYC/KYB check, deliver the new envelope to the
-subject's /inbox, and update the registry record (verifier=<addr>,
-verified_at=now).
+		Short: "Re-derive a registration's verified status from its countersignatures",
+		Long: `Load the existing registration for <address>, find the most recent
+countersignature from an accepted verification provider (the
+configured --verifiers list) on the stored party envelope,
+countersign with a verifier claim naming it, deliver the new
+envelope to the subject's /inbox, and update the registry record
+(verifier=<addr>, verified_at=now).
 
-By default the lookup names itself as the verifier, so its own
-countersignature carries both attestations. Pass --verifier to name
-an external verifying authority instead; that authority's own
-countersignature must already be present on the stored envelope.
+The same derivation runs automatically when a registration arrives
+carrying a provider countersignature; this command exists for
+recovery — e.g. a provider added to the accepted list after its
+countersignature was received.
 
 The original Authority countersignature on the previous record
 remains in the audit history (CouchDB revisions).  This command
@@ -46,13 +46,6 @@ issues a fresh signature; the subject can publish either or both.`,
 			if err != nil {
 				return gobl.ErrInput.WithCause(err)
 			}
-			var verifierAddr goblnet.Address
-			if verifier != "" {
-				verifierAddr, err = goblnet.ParseAddress(verifier)
-				if err != nil {
-					return gobl.ErrInput.WithCause(err)
-				}
-			}
 			ctx := cmd.Context()
 
 			setup, cleanup, err := buildDomain(ctx, cfg)
@@ -61,7 +54,7 @@ issues a fresh signature; the subject can publish either or both.`,
 			}
 			defer cleanup()
 
-			rec, err := setup.Registrations().Verify(ctx, addr, verifierAddr)
+			rec, err := setup.Registrations().Verify(ctx, addr)
 			if err != nil {
 				if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrValidation) {
 					return gobl.ErrInput.WithCause(err)
@@ -80,6 +73,6 @@ issues a fresh signature; the subject can publish either or both.`,
 	cmd.Flags().StringVar(&cfg.ConfigDir, "config-dir", cfg.ConfigDir, "directory holding the lookup identity (env CONFIG_DIR)")
 	cmd.Flags().StringVar(&cfg.CouchURL, "couchdb", cfg.CouchURL, "full CouchDB URL (env COUCHDB_URL; overrides the COUCHDB_* parts)")
 	cmd.Flags().StringVar(&cfg.CouchDatabase, "couchdb-database", cfg.CouchDatabase, "CouchDB database name (env COUCHDB_DATABASE)")
-	cmd.Flags().StringVar(&verifier, "verifier", "", "address of the authority that performed the verification (default: the lookup itself)")
+	cmd.Flags().StringSliceVar(&cfg.Verifiers, "verifiers", cfg.Verifiers, "accepted verification-provider addresses (env VERIFIERS, comma-separated)")
 	return cmd
 }

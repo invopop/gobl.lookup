@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -87,14 +88,16 @@ func discardLogger() *slog.Logger {
 // and its GET /who identity. Returns everything the inbox test needs
 // to POST a registration.
 type fixture struct {
-	t        *testing.T
-	lookup   *models.Identity
-	subject  *dsig.PrivateKey
-	subAddr  goblnet.Address
-	fetcher  *mockFetcher
-	registry *repos.MemoryRegistrations
-	sender   *mockSender
-	mux      http.Handler
+	t         *testing.T
+	lookup    *models.Identity
+	subject   *dsig.PrivateKey
+	subAddr   goblnet.Address
+	verifier  *dsig.PrivateKey
+	verifAddr goblnet.Address
+	fetcher   *mockFetcher
+	registry  *repos.MemoryRegistrations
+	sender    *mockSender
+	mux       http.Handler
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -110,9 +113,13 @@ func newFixture(t *testing.T) *fixture {
 	pub, _ := json.Marshal(subKey.Public())
 
 	subAddr := goblnet.Address("alice.example")
+	verifKey := dsig.NewES256Key()
+	verifPub, _ := json.Marshal(verifKey.Public())
+	verifAddr := goblnet.Address("verify.example")
 	fetcher := &mockFetcher{
 		data: map[string][]byte{
-			subAddr.KeyURL(subKey.ID()): pub,
+			subAddr.KeyURL(subKey.ID()):     pub,
+			verifAddr.KeyURL(verifKey.ID()): verifPub,
 		},
 		errs: map[string]error{},
 	}
@@ -125,11 +132,12 @@ func newFixture(t *testing.T) *fixture {
 		Registrations: reg,
 		Client:        client,
 		Sender:        send,
+		Verifiers:     []goblnet.Address{verifAddr},
 		PublicBaseURL: "https://lookup.example",
 		Logger:        discardLogger(),
 	})
 	mux := web.NewMux(setup, discardLogger())
-	f := &fixture{t: t, lookup: lookup, subject: subKey, subAddr: subAddr, fetcher: fetcher, registry: reg, sender: send, mux: mux}
+	f := &fixture{t: t, lookup: lookup, subject: subKey, subAddr: subAddr, verifier: verifKey, verifAddr: verifAddr, fetcher: fetcher, registry: reg, sender: send, mux: mux}
 	// The registration flow resolves the sender's own GET /who, so the
 	// fixture serves a self-signed identity for the subject by default.
 	who, _ := json.Marshal(f.signPartyEnvelope(subAddr.String(), ""))
@@ -236,7 +244,7 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	// Discovery link stamped on the (mutable) header.
 	require.NotEmpty(t, rec.CountersignedEnvelope.Head.Links)
 	link := rec.CountersignedEnvelope.Head.Links[0]
-	assert.Equal(t, cbc.Key("authority"), link.Category)
+	assert.Equal(t, head.LinkCategoryKeyVerification, link.Category)
 	assert.Equal(t, cbc.Key("lookup"), link.Key)
 	assert.Contains(t, link.URL, env.Head.UUID.String())
 
@@ -588,4 +596,121 @@ func TestInboxWhoUnavailable(t *testing.T) {
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+// counterSignAsVerifier stamps the fixture verifier's countersignature
+// onto env, as a provider would after completing its checks.
+func (f *fixture) counterSignAsVerifier(env *gobl.Envelope) {
+	f.t.Helper()
+	require.NoError(f.t, env.Sign(f.verifier,
+		head.WithIssuer(f.verifAddr.String()),
+		head.WithAudience(f.subAddr.String()),
+		head.WithExpiration(time.Now().Add(365*24*time.Hour))))
+}
+
+func TestAutoVerifyOnRegistration(t *testing.T) {
+	// A registration arriving with an accepted provider's
+	// countersignature is verified from the start: the lookup's own
+	// countersignature names the verifier without operator action.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	f.counterSignAsVerifier(env)
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+	assert.NotNil(t, rec.VerifiedAt)
+
+	// The lookup countersignature carries the verifier claim.
+	sigs := rec.CountersignedEnvelope.Signatures
+	p, err := head.SignedPayload(sigs[len(sigs)-1])
+	require.NoError(t, err)
+	assert.Equal(t, f.verifAddr.String(), p.Verifier)
+}
+
+func TestAutoVerifyRejectsForgedCountersignature(t *testing.T) {
+	// A countersignature claiming the provider's address but made with
+	// a different key must not be named: consumers would reject it.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	forged := dsig.NewES256Key()
+	require.NoError(t, env.Sign(forged,
+		head.WithIssuer(f.verifAddr.String()),
+		head.WithAudience(f.subAddr.String())))
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode, "registration proceeds unverified")
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Empty(t, rec.Verifier)
+	assert.Nil(t, rec.VerifiedAt)
+}
+
+func TestVerifyDerivesFromStoredEnvelope(t *testing.T) {
+	// A provider countersignature received while the provider was not
+	// yet on the accepted list is picked up later by the verify
+	// command — the recovery path.
+	f := newFixture(t)
+
+	// A parallel setup with no accepted verifiers registers the party
+	// with the countersignature aboard but unverified.
+	bare := domain.New(domain.Deps{
+		Identity:      f.lookup,
+		Registrations: f.registry,
+		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher)),
+		Sender:        f.sender,
+		PublicBaseURL: "https://lookup.example",
+		Logger:        discardLogger(),
+	})
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	f.counterSignAsVerifier(env)
+	_, err := bare.Registrations().Register(context.Background(), env)
+	require.NoError(t, err)
+	// Let the async delivery goroutine finish its Put before Verify
+	// reads and rewrites the record.
+	require.NotEmpty(t, f.waitForDelivery(2*time.Second))
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	require.Empty(t, rec.Verifier)
+
+	// The fixture setup accepts verify.example: Verify derives it.
+	f2 := domain.New(domain.Deps{
+		Identity:      f.lookup,
+		Registrations: f.registry,
+		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher)),
+		Sender:        f.sender,
+		Verifiers:     []goblnet.Address{f.verifAddr},
+		PublicBaseURL: "https://lookup.example",
+		Logger:        discardLogger(),
+	})
+	rec, err = f2.Registrations().Verify(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+	assert.NotNil(t, rec.VerifiedAt)
+}
+
+func TestVerifyWithoutAcceptedCountersignature(t *testing.T) {
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	body, _ := json.Marshal(env)
+	f.post(goblnet.InboxPath, body).Body.Close() //nolint:errcheck
+
+	setup := domain.New(domain.Deps{
+		Identity:      f.lookup,
+		Registrations: f.registry,
+		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher)),
+		Sender:        f.sender,
+		Verifiers:     []goblnet.Address{f.verifAddr},
+		PublicBaseURL: "https://lookup.example",
+		Logger:        discardLogger(),
+	})
+	_, err := setup.Registrations().Verify(context.Background(), f.subAddr)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, domain.ErrValidation))
 }

@@ -42,9 +42,19 @@ func buildDomain(ctx context.Context, cfg config.Config) (*domain.Setup, func(),
 		return nil, nil, gobl.ErrInternal.WithCause(err)
 	}
 
+	var verifiers []goblnet.Address
+	for _, v := range cfg.Verifiers {
+		addr, err := goblnet.ParseAddress(v)
+		if err != nil {
+			return nil, nil, gobl.ErrInput.WithReason("invalid verifier address %q", v)
+		}
+		verifiers = append(verifiers, addr)
+	}
+
 	setup := domain.New(domain.Deps{
 		Identity:      id,
 		Registrations: reg,
+		Verifiers:     verifiers,
 		// The client and sender authenticate outbound requests as the
 		// lookup itself (bearer request tokens, spec §5.5).
 		Client: goblnet.NewClient(goblnet.WithIdentity(id.Address(), id.PrivateKey)),
