@@ -213,10 +213,13 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 
-	// Record persisted with the Authority countersignature.
+	// Record persisted with the Authority countersignature. Delivery
+	// happens asynchronously and the mock sender is instant, so the
+	// record may already have advanced from countersigned to
+	// delivered by the time we read it.
 	rec, err := f.registry.Get(context.Background(), f.subAddr)
 	require.NoError(t, err)
-	assert.Equal(t, models.StatusCountersigned, rec.Status)
+	assert.Contains(t, []models.Status{models.StatusCountersigned, models.StatusDelivered}, rec.Status)
 	assert.Empty(t, rec.Verifier, "initial registration carries no verifier")
 	require.NotNil(t, rec.CountersignedEnvelope)
 	require.Len(t, rec.CountersignedEnvelope.Signatures, 2,
