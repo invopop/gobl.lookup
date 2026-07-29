@@ -21,14 +21,19 @@ var (
 	// ErrUnauthorized is returned when an envelope's signature or
 	// audience does not authenticate the caller.
 	ErrUnauthorized = NewError("unauthorized")
-	// ErrForbidden is returned when an authenticated caller is not
-	// permitted by the allow-list.
+	// ErrForbidden is returned when an authenticated caller does not
+	// qualify (e.g. a registration from an address that publishes no
+	// public identity).
 	ErrForbidden = NewError("forbidden")
 	// ErrNotFound is returned when no record matches the request.
 	ErrNotFound = NewError("not-found")
 	// ErrConflict is returned when an optimistic-concurrency write
 	// loses a race; callers should re-read and retry.
 	ErrConflict = NewError("conflict")
+	// ErrUnavailable is returned when a remote dependency needed to
+	// process the request (a key or who endpoint) could not be
+	// reached: a transient condition the caller should retry.
+	ErrUnavailable = NewError("unavailable")
 	// ErrInternal wraps an unexpected failure.
 	ErrInternal = NewError("internal")
 )

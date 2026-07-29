@@ -42,6 +42,10 @@ type Deps struct {
 	Client *goblnet.Client
 	// Sender delivers the countersigned envelope to the subject.
 	Sender delivery.Sender
+	// Verifiers lists the verification-provider addresses whose
+	// countersignatures the registry accepts and names in `verifier`
+	// claims.
+	Verifiers []goblnet.Address
 	// PublicBaseURL is the canonical https URL clients use to fetch
 	// this lookup (e.g. "https://lookup.gobl.org"); used to build the
 	// head.Link to the public registration record. When empty, New
@@ -72,7 +76,7 @@ func New(d Deps) *Setup {
 	if s.publicBaseURL == "" {
 		s.publicBaseURL = "https://" + string(s.identity.Address())
 	}
-	s.registrations = newRegistrations(d.Registrations, s.identity, d.Client, d.Sender, s.publicBaseURL, d.Logger)
+	s.registrations = newRegistrations(d.Registrations, s.identity, d.Client, d.Sender, d.Verifiers, s.publicBaseURL, d.Logger)
 	return s
 }
 

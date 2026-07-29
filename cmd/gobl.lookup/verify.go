@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/invopop/gobl"
-	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
 
 	"github.com/invopop/gobl.lookup/internal/config"
@@ -19,11 +18,18 @@ func verifyCmd() *cobra.Command {
 	cfg := config.FromEnv()
 	cmd := &cobra.Command{
 		Use:   "verify <address>",
-		Short: "Bump a registration's scope to `verified` after out-of-band KYC",
-		Long: `Load the existing registration for <address>, countersign the
-stored party envelope with head.ScopeVerified, deliver the new
+		Short: "Re-derive a registration's verified status from its countersignatures",
+		Long: `Load the existing registration for <address>, find the most recent
+countersignature from an accepted verification provider (the
+configured --verifiers list) on the stored party envelope,
+countersign with a verifier claim naming it, deliver the new
 envelope to the subject's /inbox, and update the registry record
-(scope=verified, verified_at=now).
+(verifier=<addr>, verified_at=now).
+
+The same derivation runs automatically when a registration arrives
+carrying a provider countersignature; this command exists for
+recovery — e.g. a provider added to the accepted list after its
+countersignature was received.
 
 The original Authority countersignature on the previous record
 remains in the audit history (CouchDB revisions).  This command
@@ -58,14 +64,15 @@ issues a fresh signature; the subject can publish either or both.`,
 			slog.Info("verified registration",
 				"address", string(addr),
 				"envelope", rec.IncomingEnvelopeUUID.String(),
-				"scope", string(head.ScopeVerified),
+				"verifier", string(rec.Verifier),
 			)
-			_, _ = fmt.Fprintf(stdOut(cmd), "verified %s (envelope %s)\n", addr, rec.IncomingEnvelopeUUID)
+			_, _ = fmt.Fprintf(stdOut(cmd), "verified %s by %s (envelope %s)\n", addr, rec.Verifier, rec.IncomingEnvelopeUUID)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&cfg.ConfigDir, "config-dir", cfg.ConfigDir, "directory holding the lookup identity (env CONFIG_DIR)")
 	cmd.Flags().StringVar(&cfg.CouchURL, "couchdb", cfg.CouchURL, "full CouchDB URL (env COUCHDB_URL; overrides the COUCHDB_* parts)")
 	cmd.Flags().StringVar(&cfg.CouchDatabase, "couchdb-database", cfg.CouchDatabase, "CouchDB database name (env COUCHDB_DATABASE)")
+	cmd.Flags().StringSliceVar(&cfg.Verifiers, "verifiers", cfg.Verifiers, "accepted verification-provider addresses (env VERIFIERS, comma-separated)")
 	return cmd
 }

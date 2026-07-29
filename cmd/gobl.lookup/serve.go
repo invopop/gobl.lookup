@@ -87,5 +87,6 @@ Deploy behind a reverse proxy that handles TLS termination.`,
 	cmd.Flags().StringVar(&cfg.CouchDatabase, "couchdb-database", cfg.CouchDatabase, "CouchDB database name (env COUCHDB_DATABASE)")
 	cmd.Flags().IntVar(&cfg.HTTPPort, "http-port", cfg.HTTPPort, "HTTP listen port (env HTTP_PORT or PORT)")
 	cmd.Flags().StringVar(&cfg.PublicBaseURL, "public-base-url", cfg.PublicBaseURL, "canonical https URL used to build /parties/<uuid> links, defaults to https://<domain> (env PUBLIC_BASE_URL)")
+	cmd.Flags().StringSliceVar(&cfg.Verifiers, "verifiers", cfg.Verifiers, "accepted verification-provider addresses (env VERIFIERS, comma-separated)")
 	return cmd
 }

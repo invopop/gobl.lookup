@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/invopop/couch"
@@ -45,6 +46,11 @@ type Config struct {
 	// /parties/<uuid> discovery links. Empty defaults to
 	// https://<domain>.
 	PublicBaseURL string
+	// Verifiers lists the GOBL Net addresses of the verification
+	// providers this registry accepts: their countersignatures are
+	// named in `verifier` claims, both automatically at registration
+	// and by the verify command.
+	Verifiers []string
 	// ShutdownTimeout bounds graceful shutdown of the HTTP server.
 	ShutdownTimeout time.Duration
 	// JSONLogs switches operator logs from text to JSON.
@@ -68,6 +74,7 @@ func FromEnv() Config {
 
 		HTTPPort:        httpPortFromEnv(),
 		PublicBaseURL:   Env("PUBLIC_BASE_URL", ""),
+		Verifiers:       EnvList("VERIFIERS"),
 		ShutdownTimeout: 10 * time.Second,
 		JSONLogs:        EnvBool("LOG_JSON", false),
 	}
@@ -154,6 +161,18 @@ func Env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// EnvList parses a comma-separated environment variable into a slice,
+// trimming whitespace and dropping empty entries.
+func EnvList(key string) []string {
+	var out []string
+	for _, v := range strings.Split(os.Getenv(key), ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // EnvBool parses a boolean environment variable, falling back on unset

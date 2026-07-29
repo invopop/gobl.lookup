@@ -1,8 +1,10 @@
 // Package web is the HTTP transport adapter for the lookup service.
 // It exposes the standard GOBL Net well-known endpoints (inbox / who
-// / keys / jwks) plus the public /parties registry record. Handlers
-// are thin: they parse the request, delegate to the domain services,
-// and map domain errors onto HTTP status codes.
+// / keys / jwks) plus the public /parties registry record. The who
+// and inbox endpoints require a bearer request token (spec §5.5);
+// key discovery and the /parties directory stay open. Handlers are
+// thin: they parse the request, delegate to the domain services, and
+// map domain errors onto HTTP status codes.
 package web
 
 import (
@@ -27,8 +29,8 @@ func NewMux(setup *domain.Setup, log *slog.Logger) http.Handler {
 	}
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("POST "+goblnet.InboxPath, handleInbox(setup, log))
-	mux.HandleFunc("POST "+goblnet.WhoPath, handleWho(setup, log))
+	mux.HandleFunc("POST "+goblnet.InboxPath, requireAuth(setup, log, handleInbox(setup, log)))
+	mux.HandleFunc("GET "+goblnet.WhoPath, requireAuth(setup, log, handleWho(setup, log)))
 	mux.HandleFunc("GET "+goblnet.KeysPath+"/{kid}", handleKey(setup, log))
 	mux.HandleFunc("GET "+goblnet.JWKSPath, handleJWKS(setup, log))
 	mux.HandleFunc("GET /parties/{key}", handleParty(setup, log))
@@ -73,6 +75,8 @@ func statusForError(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, domain.ErrConflict):
 		return http.StatusConflict
+	case errors.Is(err, domain.ErrUnavailable):
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

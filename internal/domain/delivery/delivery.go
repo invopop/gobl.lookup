@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/invopop/gobl"
+	"github.com/invopop/gobl/dsig"
 	"github.com/invopop/gobl/net"
 )
 
@@ -31,9 +32,14 @@ const dialTimeout = 5 * time.Second
 // Errors returned by Send.
 var (
 	// ErrInboxRejected matches gobl/net's sentinel — the remote
-	// /inbox returned anything other than 202.
+	// /inbox definitively rejected the envelope (a non-429 4xx);
+	// retrying will not help.
 	ErrInboxRejected = net.ErrInboxRejected
-	// ErrSendFailed wraps transport / encoding errors during send.
+	// ErrUnavailable matches gobl/net's sentinel — the remote /inbox
+	// could not be reached or answered 429/5xx; the delivery should
+	// be retried.
+	ErrUnavailable = net.ErrUnavailable
+	// ErrSendFailed wraps input / encoding errors during send.
 	ErrSendFailed = errors.New("delivery: send failed")
 )
 
@@ -45,20 +51,25 @@ type Sender interface {
 }
 
 // HTTPSender is the HTTP implementation of Sender. Construct with New;
-// the zero value is not usable.
+// the zero value is not usable. Every request carries a bearer
+// request token (spec §5.5) minted from the lookup's own identity.
 type HTTPSender struct {
 	client *http.Client
+	self   net.Address
+	key    *dsig.PrivateKey
 }
 
 // New returns an HTTPSender whose transport refuses to dial any
 // resolved IP that is loopback, private, link-local, multicast, or
-// unspecified.
-func New() *HTTPSender { return newSender(false) }
+// unspecified, and which authenticates its requests as self.
+func New(self net.Address, key *dsig.PrivateKey) *HTTPSender {
+	return newSender(self, key, false)
+}
 
 // newSender builds an HTTPSender; allowLoopback bypasses the SSRF
 // guard, intended only for tests that talk to httptest servers bound
 // to 127.0.0.1. There is no public wrapper that exposes it.
-func newSender(allowLoopback bool) *HTTPSender {
+func newSender(self net.Address, key *dsig.PrivateKey, allowLoopback bool) *HTTPSender {
 	transport := &http.Transport{
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          50,
@@ -74,6 +85,8 @@ func newSender(allowLoopback bool) *HTTPSender {
 		// caller's context (see Send), keeping it in step with the
 		// domain's delivery timeout.
 		client: &http.Client{Transport: transport},
+		self:   self,
+		key:    key,
 	}
 }
 
@@ -98,15 +111,26 @@ func (s *HTTPSender) Send(ctx context.Context, addr net.Address, env *gobl.Envel
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	token, err := net.NewToken(s.key, s.self, addr, 0)
+	if err != nil {
+		return fmt.Errorf("%w: mint request token: %v", ErrSendFailed, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrSendFailed, err)
+		// Transport failures are transient: the async delivery loop
+		// retries them, unlike definitive inbox rejections.
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	if resp.StatusCode != http.StatusAccepted {
+	switch {
+	case resp.StatusCode == http.StatusAccepted:
+		return nil
+	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
+		return fmt.Errorf("%w: HTTP %d from %s", ErrUnavailable, resp.StatusCode, url)
+	default:
 		return fmt.Errorf("%w: HTTP %d from %s", ErrInboxRejected, resp.StatusCode, url)
 	}
-	return nil
 }
 
 // safeDialContext is the DialContext used by the default HTTPSender's

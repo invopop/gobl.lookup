@@ -109,45 +109,6 @@ func TestLoadAcceptsAnyKeyFilename(t *testing.T) {
 	assert.NotNil(t, id2.FindKey(kid), "key still loaded, keyed by its JWK kid")
 }
 
-func TestLoadAllowList(t *testing.T) {
-	dir := t.TempDir()
-	id, err := repos.InitIdentity(repos.ScaffoldOptions{
-		Domain:    net.Address("lookup.example"),
-		ConfigDir: dir,
-	})
-	require.NoError(t, err)
-	assert.Empty(t, id.Allow, "allow defaults to nil when allow.json is absent")
-
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, repos.AllowFile),
-		[]byte(`["alice.example","bob.example"]`),
-		0o644,
-	))
-	id, err = repos.LoadIdentity(dir)
-	require.NoError(t, err)
-	assert.Equal(t,
-		[]net.Address{"alice.example", "bob.example"},
-		id.Allow,
-	)
-}
-
-func TestLoadAllowListRejectsInvalidAddress(t *testing.T) {
-	dir := t.TempDir()
-	_, err := repos.InitIdentity(repos.ScaffoldOptions{
-		Domain:    net.Address("lookup.example"),
-		ConfigDir: dir,
-	})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, repos.AllowFile),
-		[]byte(`["not a domain"]`),
-		0o644,
-	))
-	_, err = repos.LoadIdentity(dir)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid address")
-}
-
 func TestFindKey(t *testing.T) {
 	dir := t.TempDir()
 	id, err := repos.InitIdentity(repos.ScaffoldOptions{
