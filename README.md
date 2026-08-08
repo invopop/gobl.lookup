@@ -304,6 +304,28 @@ Supply the CouchDB connection either as a single `COUCHDB_URL`
 the split `COUCHDB_*` parts (the cluster convention, so the password
 arrives from a secret independently of the host).
 
+## Live and sandbox deployments
+
+The registry runs as two independent instances of this same
+service:
+
+| Instance | Address | Purpose |
+|----------|---------|---------|
+| Live     | `lookup.gobl.org`         | The network's default registration authority (`net.Authorities`). |
+| Sandbox  | `lookup.sandbox.gobl.org` | Registration authority for the sandbox environment (`net.SandboxAuthorities`). |
+
+There is no sandbox mode in the code: each instance is just a
+deployment with its own identity (`CONFIG_DIR`), its own CouchDB
+database (`COUCHDB_DATABASE`), and — the part that actually differs
+— its own accepted verification providers (`VERIFIERS`). The
+sandbox lists relaxed providers (e.g. a dummy KYB service that
+approves test identities), so sandbox registrations flow through
+exactly the live code path while carrying endorsements only sandbox
+verifiers would issue. GOBL Net clients keep the environments apart
+by construction: the live and sandbox trust lists are disjoint, and
+sandbox clients opt in with `net.WithSandbox()` — a live verifier
+never accepts a sandbox endorsement.
+
 ## Operations
 
 - **Re-registration vs renewal**: re-submitting the unchanged party
