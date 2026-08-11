@@ -75,27 +75,27 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		return nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	sender, err := d.client.VerifyEnvelope(ctx, env, "")
+	// Intent binding: at least one of the sender's signatures must be
+	// bound to this lookup (searched — the subject appends one
+	// audience-bound signature per delivery hop, and a returned
+	// envelope keeps its original registration signature aboard).
+	sender, err := d.client.VerifyEnvelope(ctx, env, d.identity.Address())
 	if err != nil {
+		if errors.Is(err, goblnet.ErrUnavailable) {
+			d.log.Warn("inbox.rejected", "reason", "verify_unavailable", "error", err.Error())
+			return nil, ErrUnavailable.WithMessage("could not reach the sender's key endpoint; retry later")
+		}
 		d.log.Warn("inbox.rejected", "reason", "verify_failed", "error", err.Error())
-		return nil, ErrUnauthorized.WithMessage("signature verification failed")
+		return nil, ErrUnauthorized.WithMessage("signature verification failed or envelope not signed for this lookup")
 	}
 
-	// Replay protection: signed aud MUST equal this lookup.
-	p, perr := head.SignedPayload(env.Signatures[0])
-	if perr != nil {
-		d.log.Warn("inbox.rejected", "reason", "verify_failed", "caller", string(sender), "error", perr.Error())
-		return nil, ErrUnauthorized.WithMessage("could not read signed payload")
-	}
-	if p.Aud == "" {
-		d.log.Warn("inbox.rejected", "reason", "aud_missing", "caller", string(sender))
-		return nil, ErrUnauthorized.WithMessage("envelope must carry an aud equal to this lookup")
-	}
-	// Canonicalize so U-Label or trailing-dot forms compare equal,
-	// mirroring gobl's VerifyEnvelope.
-	if aud, aerr := goblnet.ParseAddress(p.Aud); aerr != nil || aud != d.identity.Address() {
-		d.log.Warn("inbox.rejected", "reason", "aud_mismatch", "caller", string(sender), "aud", p.Aud)
-		return nil, ErrUnauthorized.WithMessage("envelope audience does not match this lookup")
+	// Any signature claiming to be this lookup's must actually be one:
+	// a returned envelope (e.g. from a verification provider, §5.3)
+	// carries the original countersignature, and a broken or forged
+	// copy means the envelope is not what was endorsed.
+	if err := d.verifyOwnSignatures(env); err != nil {
+		d.log.Warn("inbox.rejected", "reason", "own_signature_invalid", "caller", string(sender), "error", err.Error())
+		return nil, ErrUnauthorized.WithMessage("envelope carries an invalid countersignature claiming this lookup")
 	}
 	// Registration entry must carry an org.Party — that's the
 	// document we're attesting to.
@@ -309,6 +309,31 @@ func (d *Registrations) acceptedVerifier(ctx context.Context, env *gobl.Envelope
 		return "", unavailable
 	}
 	return best, nil
+}
+
+// verifyOwnSignatures checks every signature claiming this lookup's
+// address against its own published keys. Returns an error when one
+// claims an unknown key or fails verification; envelopes without any
+// such signature (a first registration) pass untouched.
+func (d *Registrations) verifyOwnSignatures(env *gobl.Envelope) error {
+	for _, sig := range env.Signatures {
+		p, err := head.SignedPayload(sig)
+		if err != nil {
+			continue
+		}
+		iss, err := goblnet.ParseAddress(p.Iss)
+		if err != nil || iss != d.identity.Address() {
+			continue
+		}
+		pub := d.identity.FindKey(sig.KeyID())
+		if pub == nil {
+			return fmt.Errorf("signature claims this lookup with unknown key %q", sig.KeyID())
+		}
+		if err := env.Head.Verify(sig, pub); err != nil {
+			return fmt.Errorf("signature claiming this lookup does not verify: %w", err)
+		}
+	}
+	return nil
 }
 
 // Find resolves a public lookup key — either an envelope UUID or a

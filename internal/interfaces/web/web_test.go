@@ -714,3 +714,94 @@ func TestVerifyWithoutAcceptedCountersignature(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, domain.ErrValidation))
 }
+
+// counterSignAsLookup stamps the lookup's own countersignature, as
+// Register does when it endorses a registration.
+func (f *fixture) counterSignAsLookup(env *gobl.Envelope) {
+	f.t.Helper()
+	require.NoError(f.t, env.Sign(f.lookup.PrivateKey,
+		head.WithIssuer(f.lookup.Address().String()),
+		head.WithAudience(f.subAddr.String()),
+		head.WithExpiration(time.Now().Add(90*24*time.Hour))))
+}
+
+func TestReturnedEnvelopeFromVerifier(t *testing.T) {
+	// The §5.3 round trip: the subject registered (audience-bound
+	// signature), the lookup countersigned, and a verification
+	// provider countersigned the exact envelope and posted it back.
+	// The delivery binds through the subject's original registration
+	// signature, the lookup's own countersignature still verifies,
+	// and auto-verify names the provider.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	f.counterSignAsLookup(env)
+	f.counterSignAsVerifier(env)
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, f.verifAddr, rec.Verifier, "provider countersignature auto-verifies")
+	assert.NotNil(t, rec.VerifiedAt)
+}
+
+func TestReturnedEnvelopeWithForgedOwnCountersignature(t *testing.T) {
+	// A signature claiming to be this lookup's but made with another
+	// key means the envelope is not what the lookup endorsed.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	forged := dsig.NewES256Key()
+	require.NoError(t, env.Sign(forged,
+		head.WithIssuer(f.lookup.Address().String()),
+		head.WithAudience(f.subAddr.String())))
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestWhoServesEndorsedEnvelope(t *testing.T) {
+	// The sender publishes the endorsed envelope exactly as delivered:
+	// its registration signature (audience-bound) first, the lookup's
+	// countersignature, and an audience-free publication signature
+	// appended at serve time. The eligibility lookup must accept it —
+	// this is the published shape every registered node converges on.
+	f := newFixture(t)
+	published := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	f.counterSignAsLookup(published)
+	require.NoError(t, published.Sign(f.subject, head.WithIssuer(f.subAddr.String())))
+	who, _ := json.Marshal(published)
+	f.fetcher.data[f.subAddr.WhoURL()] = who
+
+	env := f.signPartyEnvelope(f.subAddr.String(), f.lookup.Address().String())
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+}
+
+func TestRegistrationSignatureMayFollowPublicationSignature(t *testing.T) {
+	// A subject that signs publication-first (no audience) and appends
+	// the registration signature binds just as well: the audience is
+	// searched, not read from the first signature.
+	f := newFixture(t)
+	party := &org.Party{
+		Name:      "Alice",
+		Endpoints: []*org.Endpoint{{URI: f.subAddr.URI()}},
+	}
+	env, err := gobl.Envelop(party)
+	require.NoError(t, err)
+	require.NoError(t, env.Sign(f.subject, head.WithIssuer(f.subAddr.String())))
+	require.NoError(t, env.Sign(f.subject,
+		head.WithIssuer(f.subAddr.String()),
+		head.WithAudience(f.lookup.Address().String())))
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+}
