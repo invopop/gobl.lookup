@@ -809,3 +809,41 @@ func TestRegistrationSignatureMayFollowPublicationSignature(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
+
+func TestInboxIgnoresSignatureOrder(t *testing.T) {
+	// The subject comes from the party document, never from signature
+	// position: a permuted returned envelope registers identically.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), "")
+	f.counterSignAsLookup(env)
+	f.counterSignAsVerifier(env)
+	env.Signatures[0], env.Signatures[2] = env.Signatures[2], env.Signatures[0]
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+}
+
+func TestInboxRejectsForeignPartyDocument(t *testing.T) {
+	// An envelope whose party document declares someone else's address
+	// has no valid self-signature by its subject: nobody can register
+	// a party document for an address they do not control.
+	f := newFixture(t)
+	party := &org.Party{
+		Name:      "Impostor",
+		Endpoints: []*org.Endpoint{{URI: goblnet.Address("victim.example").URI()}},
+	}
+	env, err := gobl.Envelop(party)
+	require.NoError(t, err)
+	require.NoError(t, env.Sign(f.subject, head.WithIssuer(f.subAddr.String())))
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
