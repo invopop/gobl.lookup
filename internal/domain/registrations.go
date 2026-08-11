@@ -10,7 +10,6 @@ import (
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
-	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/uuid"
 
 	"github.com/invopop/gobl.lookup/internal/domain/delivery"
@@ -63,30 +62,35 @@ func newRegistrations(store RegistrationStore, identity *Identity, client *gobln
 }
 
 // Register processes a registration request: a signed envelope
-// containing the sender's org.Party. It verifies the signature and
-// audience, resolves the sender's own GET /who to confirm the address
-// serves a public identity, countersigns the envelope as the
-// Authority, persists the record, and queues asynchronous
-// delivery back to the sender's /inbox. The persisted record is
-// returned once stored; delivery happens in the background.
+// containing the subject's org.Party. It establishes the subject from
+// the party document itself, resolves the subject's own GET /who to
+// confirm the address serves a public identity, countersigns the
+// envelope as the Authority, persists the record, and queues
+// asynchronous delivery back to the subject's /inbox. The persisted
+// record is returned once stored; delivery happens in the background.
 func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*models.Registration, error) {
 	if err := env.Validate(); err != nil {
 		d.log.Warn("inbox.rejected", "reason", "validation", "error", err.Error())
 		return nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	// Intent binding: at least one of the sender's signatures must be
-	// bound to this lookup (searched — the subject appends one
-	// audience-bound signature per delivery hop, and a returned
-	// envelope keeps its original registration signature aboard).
-	sender, err := d.client.VerifyEnvelope(ctx, env, d.identity.Address())
+	// Party envelopes are bearer documents (spec §8.3): the subject is
+	// the address the party document itself declares, attested by a
+	// valid self-signature — no audience binding, no significance to
+	// signature order. The request token carries delivery intent and
+	// the who eligibility check below gates who can register.
+	sender, err := d.client.VerifyParty(ctx, env)
 	if err != nil {
-		if errors.Is(err, goblnet.ErrUnavailable) {
+		switch {
+		case errors.Is(err, goblnet.ErrUnavailable):
 			d.log.Warn("inbox.rejected", "reason", "verify_unavailable", "error", err.Error())
-			return nil, ErrUnavailable.WithMessage("could not reach the sender's key endpoint; retry later")
+			return nil, ErrUnavailable.WithMessage("could not reach the subject's key endpoint; retry later")
+		case errors.Is(err, goblnet.ErrPartyMissing):
+			d.log.Warn("inbox.rejected", "reason", "not_a_party", "error", err.Error())
+			return nil, ErrValidation.WithMessage("registration envelope must contain an org.Party declaring a gobl: endpoint")
 		}
 		d.log.Warn("inbox.rejected", "reason", "verify_failed", "error", err.Error())
-		return nil, ErrUnauthorized.WithMessage("signature verification failed or envelope not signed for this lookup")
+		return nil, ErrUnauthorized.WithMessage("signature verification failed")
 	}
 
 	// Any signature claiming to be this lookup's must actually be one:
@@ -96,12 +100,6 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	if err := d.verifyOwnSignatures(env); err != nil {
 		d.log.Warn("inbox.rejected", "reason", "own_signature_invalid", "caller", string(sender), "error", err.Error())
 		return nil, ErrUnauthorized.WithMessage("envelope carries an invalid countersignature claiming this lookup")
-	}
-	// Registration entry must carry an org.Party — that's the
-	// document we're attesting to.
-	if _, ok := env.Extract().(*org.Party); !ok {
-		d.log.Warn("inbox.rejected", "reason", "not_a_party", "caller", string(sender))
-		return nil, ErrValidation.WithMessage("registration envelope must contain an org.Party document")
 	}
 
 	// The subject of a registration is a *sending* participant, so it

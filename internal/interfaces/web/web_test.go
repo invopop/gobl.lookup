@@ -255,22 +255,26 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	assert.Equal(t, env.Head.UUID, sent[0].env.Head.UUID)
 }
 
-func TestInboxRejectsMissingAud(t *testing.T) {
+func TestInboxAcceptsBearerEnvelope(t *testing.T) {
+	// Party envelopes are bearer documents (spec §8.3): the canonical
+	// registration is the audience-free publication signature alone.
 	f := newFixture(t)
 	env := f.signPartyEnvelope(f.subAddr.String(), "")
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
-func TestInboxRejectsWrongAud(t *testing.T) {
+func TestInboxIgnoresForeignAud(t *testing.T) {
+	// An audience on the subject's signature is a legacy hop artifact
+	// and carries no meaning here; the request token is the intent.
 	f := newFixture(t)
 	env := f.signPartyEnvelope(f.subAddr.String(), "someone.else")
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
 func TestInboxRejectsNonPartyDocument(t *testing.T) {
@@ -804,4 +808,42 @@ func TestRegistrationSignatureMayFollowPublicationSignature(t *testing.T) {
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+}
+
+func TestInboxIgnoresSignatureOrder(t *testing.T) {
+	// The subject comes from the party document, never from signature
+	// position: a permuted returned envelope registers identically.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), "")
+	f.counterSignAsLookup(env)
+	f.counterSignAsVerifier(env)
+	env.Signatures[0], env.Signatures[2] = env.Signatures[2], env.Signatures[0]
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+}
+
+func TestInboxRejectsForeignPartyDocument(t *testing.T) {
+	// An envelope whose party document declares someone else's address
+	// has no valid self-signature by its subject: nobody can register
+	// a party document for an address they do not control.
+	f := newFixture(t)
+	party := &org.Party{
+		Name:      "Impostor",
+		Endpoints: []*org.Endpoint{{URI: goblnet.Address("victim.example").URI()}},
+	}
+	env, err := gobl.Envelop(party)
+	require.NoError(t, err)
+	require.NoError(t, env.Sign(f.subject, head.WithIssuer(f.subAddr.String())))
+
+	body, _ := json.Marshal(env)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
