@@ -847,3 +847,78 @@ func TestInboxRejectsForeignPartyDocument(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
+
+// linkCount counts the lookup discovery links on an envelope.
+func linkCount(env *gobl.Envelope) int {
+	n := 0
+	for _, l := range env.Head.Links {
+		if l != nil && l.Category == head.LinkCategoryKeyVerification && l.Key == "lookup" {
+			n++
+		}
+	}
+	return n
+}
+
+func TestReturnedEnvelopeKeepsSingleDiscoveryLink(t *testing.T) {
+	// The verifier round trip re-registers an envelope that already
+	// carries the discovery link from the first round: the link must
+	// be restamped, not duplicated — duplicate link keys make the
+	// envelope invalid, and the subject's inbox would 422 the
+	// delivery.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), "")
+	body, _ := json.Marshal(env)
+	f.post(goblnet.InboxPath, body).Body.Close() //nolint:errcheck
+	sent := f.waitForDelivery(2 * time.Second)
+	require.Len(t, sent, 1)
+	require.Equal(t, 1, linkCount(sent[0].env))
+
+	// The subject forwards the round-1 envelope (link aboard) to the
+	// verifier, which countersigns and posts it back.
+	returned := sent[0].env
+	f.counterSignAsVerifier(returned)
+	body, _ = json.Marshal(returned)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, 1, linkCount(rec.CountersignedEnvelope), "restamped, not duplicated")
+	require.NoError(t, rec.CountersignedEnvelope.Validate(), "delivered envelope must validate at the subject's inbox")
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+}
+
+func TestVerifyHealsDuplicateDiscoveryLinks(t *testing.T) {
+	// Records poisoned by the pre-fix duplicate append must recover
+	// through the verify command: the stale links are stripped before
+	// countersigning, which would otherwise fail post-sign validation
+	// and wipe the envelope's signatures.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), "")
+	f.counterSignAsVerifier(env)
+	body, _ := json.Marshal(env)
+	f.post(goblnet.InboxPath, body).Body.Close() //nolint:errcheck
+	require.NotEmpty(t, f.waitForDelivery(2*time.Second))
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	// Simulate the poisoned stored state: a second identical link.
+	rec.CountersignedEnvelope.Head.Links = append(rec.CountersignedEnvelope.Head.Links,
+		rec.CountersignedEnvelope.Head.Links[0])
+	require.NoError(t, f.registry.Put(context.Background(), rec))
+
+	setup := domain.New(domain.Deps{
+		Identity:      f.lookup,
+		Registrations: f.registry,
+		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher), goblnet.WithAuthorities("lookup.example")),
+		Sender:        f.sender,
+		Verifiers:     []goblnet.Address{f.verifAddr},
+		PublicBaseURL: "https://lookup.example",
+		Logger:        discardLogger(),
+	})
+	rec, err = setup.Registrations().Verify(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	assert.Equal(t, 1, linkCount(rec.CountersignedEnvelope))
+	require.NoError(t, rec.CountersignedEnvelope.Validate())
+}

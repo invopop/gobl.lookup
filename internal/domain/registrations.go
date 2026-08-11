@@ -145,6 +145,13 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		d.log.Warn("inbox.auto_verify_unavailable", "caller", string(sender), "error", err.Error())
 	}
 
+	// Stamp the discovery link to the public record before signing:
+	// stamping replaces any copy from an earlier countersign round —
+	// duplicate link keys make the envelope invalid. Header links are
+	// unsigned (mutable post-signature) by design; the link is a
+	// discovery hint, not part of the trust claim.
+	d.stampDiscoveryLink(env)
+
 	// Countersign: adds Authority signature with iss=lookup,
 	// aud=sender, any preserved verifier claim, and a 90-day exp.
 	// UUID + digest unchanged.
@@ -154,17 +161,6 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	}); err != nil {
 		d.log.Error("inbox.countersign_failed", "caller", string(sender), "error", err.Error())
 		return nil, ErrInternal.WithCause(err)
-	}
-
-	// Stamp a discovery link to the public record. Header links are
-	// unsigned (mutable post-signature) by design; the link is a
-	// discovery hint, not part of the trust claim.
-	if d.publicBaseURL != "" {
-		env.Head.Links = append(env.Head.Links, &head.Link{
-			Category: head.LinkCategoryKeyVerification,
-			Key:      "lookup",
-			URL:      d.publicBaseURL + "/parties/" + env.Head.UUID.String(),
-		})
 	}
 
 	// Persist before delivery so the record exists even if the
@@ -222,8 +218,10 @@ func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*mode
 		return nil, ErrValidation.WithMessage("no countersignature from an accepted verifier on the registration envelope for %s", addr)
 	}
 
-	// Stamp a fresh Authority signature carrying the verifier claim
-	// onto the existing envelope.
+	// Restamp the discovery link (deduplicating any earlier rounds)
+	// and stamp a fresh Authority signature carrying the verifier
+	// claim onto the existing envelope.
+	d.stampDiscoveryLink(env)
 	if err := d.identity.CounterSign(env, CounterSignOptions{
 		Subject:  addr,
 		Verifier: verifier,
@@ -332,6 +330,28 @@ func (d *Registrations) verifyOwnSignatures(env *gobl.Envelope) error {
 		}
 	}
 	return nil
+}
+
+// stampDiscoveryLink replaces the lookup's discovery link on the
+// envelope: every earlier round's copy is stripped first, since
+// duplicate link keys fail envelope validation and links accumulate
+// as the same envelope returns for renewals and verification.
+func (d *Registrations) stampDiscoveryLink(env *gobl.Envelope) {
+	if d.publicBaseURL == "" || env.Head == nil {
+		return
+	}
+	links := make([]*head.Link, 0, len(env.Head.Links)+1)
+	for _, l := range env.Head.Links {
+		if l != nil && l.Category == head.LinkCategoryKeyVerification && l.Key == "lookup" {
+			continue
+		}
+		links = append(links, l)
+	}
+	env.Head.Links = append(links, &head.Link{
+		Category: head.LinkCategoryKeyVerification,
+		Key:      "lookup",
+		URL:      d.publicBaseURL + "/parties/" + env.Head.UUID.String(),
+	})
 }
 
 // Find resolves a public lookup key — either an envelope UUID or a
