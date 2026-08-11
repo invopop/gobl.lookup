@@ -922,3 +922,45 @@ func TestVerifyHealsDuplicateDiscoveryLinks(t *testing.T) {
 	assert.Equal(t, 1, linkCount(rec.CountersignedEnvelope))
 	require.NoError(t, rec.CountersignedEnvelope.Validate())
 }
+
+// sigCountBy counts valid-looking signatures by issuer address.
+func sigCountBy(env *gobl.Envelope, addr goblnet.Address) int {
+	n := 0
+	for _, sig := range env.Signatures {
+		if p, err := head.SignedPayload(sig); err == nil {
+			if iss, ierr := goblnet.ParseAddress(p.Iss); ierr == nil && iss == addr {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestCounterSignSupersedesOwnSignatures(t *testing.T) {
+	// The verifier round trip re-registers an envelope already
+	// carrying the registration round's countersignature: the fresh
+	// one replaces it (spec §5.3), leaving exactly three signatures —
+	// subject, lookup, verifier.
+	f := newFixture(t)
+	env := f.signPartyEnvelope(f.subAddr.String(), "")
+	body, _ := json.Marshal(env)
+	f.post(goblnet.InboxPath, body).Body.Close() //nolint:errcheck
+	sent := f.waitForDelivery(2 * time.Second)
+	require.Len(t, sent, 1)
+
+	returned := sent[0].env
+	f.counterSignAsVerifier(returned)
+	body, _ = json.Marshal(returned)
+	resp := f.post(goblnet.InboxPath, body)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	rec, err := f.registry.Get(context.Background(), f.subAddr)
+	require.NoError(t, err)
+	final := rec.CountersignedEnvelope
+	require.Len(t, final.Signatures, 3, "subject + lookup + verifier, nothing stale")
+	assert.Equal(t, 1, sigCountBy(final, f.lookup.Address()))
+	assert.Equal(t, 1, sigCountBy(final, f.subAddr))
+	assert.Equal(t, 1, sigCountBy(final, f.verifAddr))
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+}
