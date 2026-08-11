@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/go-kivik/kivik/v4 v4.5.2
 	github.com/invopop/couch v0.1.0
-	github.com/invopop/gobl v0.504.1-0.20260811140727-e46394e7e0de
+	github.com/invopop/gobl v0.504.1-0.20260811142942-19e8feaa0aaf
 	github.com/magefile/mage v1.17.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
