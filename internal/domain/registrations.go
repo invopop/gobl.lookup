@@ -75,18 +75,17 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		return nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	// Intent binding: at least one of the sender's signatures must be
-	// bound to this lookup (searched — the subject appends one
-	// audience-bound signature per delivery hop, and a returned
-	// envelope keeps its original registration signature aboard).
-	sender, err := d.client.VerifyEnvelope(ctx, env, d.identity.Address())
+	// Party envelopes are bearer documents (spec §8.3): no audience
+	// binding is required — the request token carries delivery intent,
+	// and the who eligibility check below gates who can register.
+	sender, err := d.client.VerifyEnvelope(ctx, env, "")
 	if err != nil {
 		if errors.Is(err, goblnet.ErrUnavailable) {
 			d.log.Warn("inbox.rejected", "reason", "verify_unavailable", "error", err.Error())
 			return nil, ErrUnavailable.WithMessage("could not reach the sender's key endpoint; retry later")
 		}
 		d.log.Warn("inbox.rejected", "reason", "verify_failed", "error", err.Error())
-		return nil, ErrUnauthorized.WithMessage("signature verification failed or envelope not signed for this lookup")
+		return nil, ErrUnauthorized.WithMessage("signature verification failed")
 	}
 
 	// Any signature claiming to be this lookup's must actually be one:

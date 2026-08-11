@@ -255,22 +255,26 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	assert.Equal(t, env.Head.UUID, sent[0].env.Head.UUID)
 }
 
-func TestInboxRejectsMissingAud(t *testing.T) {
+func TestInboxAcceptsBearerEnvelope(t *testing.T) {
+	// Party envelopes are bearer documents (spec §8.3): the canonical
+	// registration is the audience-free publication signature alone.
 	f := newFixture(t)
 	env := f.signPartyEnvelope(f.subAddr.String(), "")
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
-func TestInboxRejectsWrongAud(t *testing.T) {
+func TestInboxIgnoresForeignAud(t *testing.T) {
+	// An audience on the subject's signature is a legacy hop artifact
+	// and carries no meaning here; the request token is the intent.
 	f := newFixture(t)
 	env := f.signPartyEnvelope(f.subAddr.String(), "someone.else")
 	body, _ := json.Marshal(env)
 	resp := f.post(goblnet.InboxPath, body)
 	defer resp.Body.Close() //nolint:errcheck
-	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
 }
 
 func TestInboxRejectsNonPartyDocument(t *testing.T) {
