@@ -71,9 +71,9 @@ verifier is dropped and KYC must be repeated.
 
 Verification upgrades a *registered* identity to *verified* by
 adding two things to the party envelope: a countersignature from a
-KYC/KYB provider ("verifier", e.g. `didit.gobl.org`), and a fresh
-lookup countersignature carrying the `verifier` claim that points
-at it. The registry orchestrates; the verifier performs and charges
+KYC/KYB provider ("verifier" — any provider operating its own GOBL
+Net address, e.g. `verify.example.com`), and a fresh lookup
+countersignature carrying the `verifier` claim that points at it. The registry orchestrates; the verifier performs and charges
 for the actual checks; the protocol carries the results as plain
 inbox deliveries.
 
@@ -110,9 +110,9 @@ inbox deliveries.
    to it. Session URLs are unguessable on purpose —
    `/verify/<address>` alone would let anyone walk into a session
    holding another party's data.
-5. **The verifier's process.** On the verifier's own pages (e.g.
-   `https://didit.gobl.org/...`), the user provides the company
-   representative's personal contact details and payment. Payment
+5. **The verifier's process.** On the verifier's own pages, the
+   user provides the company representative's personal contact
+   details and payment. Payment
    is deliberately part of the KYC surface — cardholder data is
    itself a fraud signal — and keeps verification revenue entirely
    on the verifier's side: the registry stays free. From here the
@@ -159,17 +159,15 @@ edits).
 - The `/verify/<address>` web flow: OTP issue/check, verifier
   picker, redirect, and a status page for pending sessions.
 - The verifier session API contract (step 4): create-session
-  request/response shape shared with bridge implementations like
-  `didit.gobl.org`, including session expiry and failure
-  callbacks.
+  request/response shape shared by provider bridge
+  implementations, including session expiry and failure callbacks.
 - A `head.Link` on the registration delivery pointing the subject
   at `verify/<address>`, so every registered party discovers the
   upgrade path.
 
 ## Architecture
 
-The code follows the standard Invopop layered layout (cf. `silo`,
-`access`):
+The code follows a conventional layered layout:
 
 ```
 internal/
@@ -281,8 +279,9 @@ JSON on stderr.
 ## Configuration
 
 `serve` and `verify` read their configuration from the environment
-(the mechanism the cluster uses to inject config and secrets); the
-equivalent flags override the environment for local use.
+(the mechanism container platforms use to inject config and
+secrets); the equivalent flags override the environment for local
+use.
 
 | Env var             | Flag                 | Default       | Purpose                                                             |
 |---------------------|----------------------|---------------|--------------------------------------------------------------------|
@@ -296,13 +295,14 @@ equivalent flags override the environment for local use.
 | `COUCHDB_DATABASE`  | `--couchdb-database` | `gobl-lookup` | Database name.                                                      |
 | `HTTP_PORT`/`PORT`  | `--http-port`        | `8080`        | HTTP listen port (`HTTP_PORT` wins over `PORT`).                    |
 | `PUBLIC_BASE_URL`   | `--public-base-url`  | `https://<domain>` | Canonical URL for `/parties/<uuid>` discovery links.          |
-| `VERIFIERS`         | `--verifiers`        | —             | Comma-separated addresses of accepted verification providers (e.g. `didit.gobl.org`). |
+| `VERIFIERS`         | `--verifiers`        | —             | Comma-separated addresses of accepted verification providers (e.g. `verify.example.com`). |
 | `LOG_JSON`          | `--json`             | `false`       | Emit structured JSON logs on stderr.                               |
 
 Supply the CouchDB connection either as a single `COUCHDB_URL`
 (handy for local dev, e.g. `http://admin:pass@localhost:5984`) or via
-the split `COUCHDB_*` parts (the cluster convention, so the password
-arrives from a secret independently of the host).
+the split `COUCHDB_*` parts (convenient under Kubernetes-style
+deployments, so the password arrives from a secret independently of
+the host).
 
 ## Operations
 
@@ -340,7 +340,7 @@ docker run --rm -p 8080:8080 \
 
 The server listens on `8080` by default (no `HTTP_PORT` needed).
 
-In a cluster, mount the identity (`private.jwk` + `party.json` +
+In a container deployment, mount the identity (`private.jwk` + `party.json` +
 `keys/`) into `CONFIG_DIR` and inject the `COUCHDB_*` values (password
 from a secret) as environment variables — see [Configuration](#configuration).
 
