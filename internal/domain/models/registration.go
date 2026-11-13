@@ -48,6 +48,27 @@ type Registration struct {
 	LastDeliveryError     string         `json:"last_delivery_error,omitempty"`
 	LastDeliveryAt        *time.Time     `json:"last_delivery_at,omitempty"`
 	VerifiedAt            *time.Time     `json:"verified_at,omitempty"`
+	// Lineage lists the subject keys bound in turn since the lineage
+	// last started (spec §7.3); the last is the current one.
+	Lineage []*LineageKey `json:"lineage,omitempty"`
+}
+
+// LineageKey is one subject key in a registration's lineage.
+type LineageKey struct {
+	// JKT is the key's RFC 7638 thumbprint, as carried in cnf claims.
+	JKT string `json:"jkt"`
+	// KID is the key's ID at the subject's address.
+	KID string `json:"kid"`
+	// AddedAt is when the key joined the lineage.
+	AddedAt time.Time `json:"added_at"`
+}
+
+// CurrentKey returns the lineage's current key, or nil.
+func (r *Registration) CurrentKey() *LineageKey {
+	if len(r.Lineage) == 0 {
+		return nil
+	}
+	return r.Lineage[len(r.Lineage)-1]
 }
 
 // RegistrationDocID returns the CouchDB document ID for a given address.

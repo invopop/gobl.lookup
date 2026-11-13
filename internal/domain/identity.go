@@ -57,31 +57,37 @@ func (d *Identity) JWKS() ([]byte, error) { return d.model.JWKS() }
 func (d *Identity) PublicKeys() []*dsig.PublicKey { return d.model.PublicKeys }
 
 // VerifyRequest verifies the Authorization header of an inbound who
-// or inbox request (a bearer request token, spec §5.5) and returns
+// request (a bearer request token, spec §5.5) and returns
 // the verified requester address. The token's audience must be this
 // lookup and its freshness window must include the current time.
 func (d *Identity) VerifyRequest(ctx context.Context, header string) (goblnet.Address, error) {
 	return d.client.VerifyAuthorization(ctx, header, d.Address())
 }
 
-// PartyEnvelope returns the JSON of the lookup's party wrapped in a
-// self-signed envelope (iss = the lookup's address, no aud), served
-// at GET /.well-known/gobl/who. The response is a static document:
-// it is signed once per process and cached.
-func (d *Identity) PartyEnvelope() ([]byte, error) {
+// PartyEnvelope returns the JSON of the lookup's party envelope for
+// requester, served at GET /.well-known/gobl/who: from the lookup to
+// the requester, signed for it (spec §5.1). The unsigned envelope is
+// built once per process; each response gets its own signature.
+func (d *Identity) PartyEnvelope(requester goblnet.Address) ([]byte, error) {
 	d.partyOnce.Do(func() {
 		env, err := gobl.Envelop(d.model.Party)
 		if err != nil {
 			d.partyErr = fmt.Errorf("identity: envelop party: %w", err)
 			return
 		}
-		if err := env.Sign(d.model.PrivateKey, head.WithIssuer(d.Address().String())); err != nil {
-			d.partyErr = fmt.Errorf("identity: sign party: %w", err)
-			return
-		}
 		d.partyData, d.partyErr = json.Marshal(env)
 	})
-	return d.partyData, d.partyErr
+	if d.partyErr != nil {
+		return nil, d.partyErr
+	}
+	env := new(gobl.Envelope)
+	if err := json.Unmarshal(d.partyData, env); err != nil {
+		return nil, fmt.Errorf("identity: copy party envelope: %w", err)
+	}
+	if err := goblnet.Sign(env, d.model.PrivateKey, d.Address(), requester); err != nil {
+		return nil, fmt.Errorf("identity: sign party: %w", err)
+	}
+	return json.Marshal(env)
 }
 
 // CounterSignOptions configure a CounterSign call.
@@ -90,17 +96,19 @@ type CounterSignOptions struct {
 	// countersigned; copied into the signed `aud` field so the
 	// resulting signature is bound to that specific subject.
 	Subject goblnet.Address
-	// Verifier names the authority that performed identity
+	// Key is the thumbprint of the subject key the registration binds,
+	// carried as the signed `cnf` claim (spec §7.3).
+	Key string
+	// Verifier names the participant that performed identity
 	// verification (KYC/KYB) of the subject, carried as the signed
-	// `verifier` claim. The lookup names itself when it performed the
-	// verification. Empty asserts registration only.
+	// `verifier` claim. Empty asserts registration only.
 	Verifier goblnet.Address
 }
 
 // CounterSign adds a fresh Authority countersignature to env, valid
-// for endorsementTTL (carried as the signed `exp` claim). The
-// envelope's UUID and Digest are unchanged — only the Signatures
-// slice grows.
+// for endorsementTTL (carried as the signed `exp` claim), and addresses
+// env from this lookup to the subject, which the countersignature
+// confirms. The envelope's UUID and Digest are unchanged.
 func (d *Identity) CounterSign(env *gobl.Envelope, opts CounterSignOptions) error {
 	if env == nil || env.Head == nil {
 		return errors.New("identity: cannot countersign a nil envelope")
@@ -119,13 +127,15 @@ func (d *Identity) CounterSign(env *gobl.Envelope, opts CounterSignOptions) erro
 		sigs = append(sigs, sig)
 	}
 	env.Signatures = sigs
+	if opts.Key == "" {
+		return errors.New("identity: cannot countersign without a subject key")
+	}
 	signOpts := []head.SignOption{
-		head.WithIssuer(d.Address().String()),
-		head.WithAudience(opts.Subject.String()),
 		head.WithExpiration(time.Now().Add(endorsementTTL)),
+		head.WithConfirmation(opts.Key),
 	}
 	if opts.Verifier != "" {
 		signOpts = append(signOpts, head.WithVerifier(opts.Verifier.String()))
 	}
-	return env.Sign(d.model.PrivateKey, signOpts...)
+	return goblnet.Sign(env, d.model.PrivateKey, d.Address(), opts.Subject, signOpts...)
 }

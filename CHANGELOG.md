@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Registrations follow the latest GOBL Net spec. A request is an ordinary delivery from the subject to the lookup, confirmed by its signature for the lookup, and needs no request token; the subject is its `from` address. The lookup drops the request signature, countersigns with a `cnf` claim binding the subject's key, and addresses the envelope back to the subject.
+- The lookup keeps each address's key lineage (`Registration.Lineage`). A request signed with the current and a new key rolls over to the new key; one signed only with an unknown key starts a new lineage. A verifier is named only when its countersignature binds, with `cnf`, a key in the lineage, so rollovers keep a party verified and a new holder of an address cannot inherit its verification.
+- Verifiers are no longer accepted delivering to the lookup on a subject's behalf; the subject registers again with the verified envelope. The renewal rule based on an unchanged digest is replaced by the lineage check.
+- `GET /.well-known/gobl/who` answers with the lookup's party envelope addressed and signed for the requester.
+- Deliveries to subjects carry no request token.
+
 - Verification is now list-driven and automatic: the registry accepts a configured set of verification providers (`--verifiers` / `VERIFIERS`), and a registration or renewal arriving with a valid countersignature from one of them is verified on arrival — the countersignature is cryptographically checked against the provider's published key before being named (an unreachable key endpoint registers unverified and logs `inbox.auto_verify_unavailable`; the derivation re-runs on renewal). `gobl.lookup verify <address>` loses the `--verifier` flag and becomes a recovery command that re-derives the verifier from the stored envelope, e.g. after a provider is added to the accepted list. The discovery link stamped on countersigned envelopes uses the standard `verification` category (the previous `authority` value failed envelope validation on re-signing).
 
 - Transient failures now answer `503 Service Unavailable` instead of

@@ -9,6 +9,7 @@ import (
 
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/head"
+	"github.com/invopop/gobl/org"
 	goblnet "github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/uuid"
 
@@ -61,12 +62,14 @@ func newRegistrations(store RegistrationStore, identity *Identity, client *gobln
 	}
 }
 
-// Register processes a registration request: a signed envelope
-// containing the subject's org.Party. It establishes the subject from
-// the party document itself, resolves the subject's own GET /who to
-// confirm the address serves a public identity, countersigns the
+// Register processes a registration request: a delivery to this
+// lookup's inbox of the subject's party envelope. The subject is the
+// envelope's from address, confirmed by a signature for this lookup
+// with the subject's current key, a new key, or both (spec §7.3). It
+// resolves the subject's own GET /who to confirm the address serves an
+// identity, updates the subject's key lineage, countersigns the
 // envelope as the Authority, persists the record, and queues
-// asynchronous delivery back to the subject's /inbox. The persisted
+// asynchronous delivery back to the subject's inbox. The persisted
 // record is returned once stored; delivery happens in the background.
 func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*models.Registration, error) {
 	if err := env.Validate(); err != nil {
@@ -74,76 +77,64 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		return nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	// Party envelopes are bearer documents (spec §8.3): the subject is
-	// the address the party document itself declares, attested by a
-	// valid self-signature — no audience binding, no significance to
-	// signature order. The request token carries delivery intent and
-	// the who eligibility check below gates who can register.
-	sender, err := d.client.VerifyParty(ctx, env)
+	keys, err := d.client.DeliveryKeys(ctx, env, d.identity.Address())
 	if err != nil {
-		switch {
-		case errors.Is(err, goblnet.ErrUnavailable):
+		if errors.Is(err, goblnet.ErrUnavailable) {
 			d.log.Warn("inbox.rejected", "reason", "verify_unavailable", "error", err.Error())
-			return nil, ErrUnavailable.WithMessage("could not reach the subject's key endpoint; retry later")
-		case errors.Is(err, goblnet.ErrPartyMissing):
-			d.log.Warn("inbox.rejected", "reason", "not_a_party", "error", err.Error())
-			return nil, ErrValidation.WithMessage("registration envelope must contain an org.Party declaring a gobl: endpoint")
+			return nil, ErrUnavailable.WithMessage("could not reach the sender's key endpoint; retry later")
 		}
 		d.log.Warn("inbox.rejected", "reason", "verify_failed", "error", err.Error())
-		return nil, ErrUnauthorized.WithMessage("signature verification failed")
+		return nil, ErrUnauthorized.WithMessage("envelope is not signed by its sender for this lookup: %s", err.Error())
+	}
+	sender, err := goblnet.ParseAddress(env.Head.From.Opaque())
+	if err != nil {
+		return nil, ErrValidation.WithCause(err)
+	}
+	if _, ok := env.Extract().(*org.Party); !ok {
+		d.log.Warn("inbox.rejected", "reason", "not_a_party", "caller", string(sender))
+		return nil, ErrValidation.WithMessage("registration envelope must contain an org.Party")
 	}
 
 	// Any signature claiming to be this lookup's must actually be one:
-	// a returned envelope (e.g. from a verification provider, §5.3)
-	// carries the original countersignature, and a broken or forged
-	// copy means the envelope is not what was endorsed.
+	// a renewal carries the previous countersignature, and a broken or
+	// forged copy means the envelope is not what was endorsed.
 	if err := d.verifyOwnSignatures(env); err != nil {
 		d.log.Warn("inbox.rejected", "reason", "own_signature_invalid", "caller", string(sender), "error", err.Error())
 		return nil, ErrUnauthorized.WithMessage("envelope carries an invalid countersignature claiming this lookup")
 	}
 
-	// The subject of a registration is a *sending* participant, so it
-	// must serve a public identity of its own: GET /who on the sender
-	// (which also re-fetches its published key) must return a verified
-	// party. A 204 marks a receive-only account, which cannot register.
-	if _, err := d.client.Who(ctx, sender); err != nil {
-		// A transient outage while resolving the sender's who must not
-		// permanently reject the registration: senders stop retrying
-		// on 4xx, so surface a retryable condition instead.
-		if errors.Is(err, goblnet.ErrUnavailable) {
-			d.log.Warn("inbox.rejected", "reason", "who_unavailable", "caller", string(sender), "error", err.Error())
-			return nil, ErrUnavailable.WithMessage("could not reach sender's public identity; retry later")
-		}
-		reason := "who_failed"
-		msg := "could not resolve sender's public identity"
-		switch {
-		case errors.Is(err, goblnet.ErrNoContent):
-			reason = "who_no_content"
-			msg = "sender does not publish a public identity; senders must serve GET /who"
-		case errors.Is(err, goblnet.ErrPending):
-			reason = "who_pending"
-			msg = "sender defers identity disclosure; senders must serve GET /who openly to register"
-		}
-		d.log.Warn("inbox.rejected", "reason", reason, "caller", string(sender), "error", err.Error())
-		return nil, ErrForbidden.WithMessage("%s", msg)
+	if err := d.checkWho(ctx, sender); err != nil {
+		return nil, err
 	}
 
-	// An unchanged party re-registering before its endorsement expires
-	// is a renewal and keeps its current verifier; anything else
-	// starts as registered only. Either way, a countersignature from
-	// an accepted verification provider on the incoming envelope wins:
-	// it attests to exactly this digest, so the registration is
-	// verified from the start (auto-verify — the manual verify command
-	// only re-triggers this same derivation).
-	verifier, renewal := d.renewalVerifier(ctx, sender, env)
-	if av, err := d.acceptedVerifier(ctx, env); av != "" {
-		verifier = av
-	} else if err != nil {
+	prev, err := d.store.Get(ctx, sender)
+	switch {
+	case errors.Is(err, repos.ErrNotFound):
+		prev = nil
+	case err != nil:
+		return nil, ErrInternal.WithCause(err)
+	}
+
+	// Accepted verifications bind a subject key with cnf; one counts
+	// only while that key is in the subject's lineage, which a rollover
+	// extends and a lost key or a new holder of the address restarts.
+	verifications, verr := d.acceptedVerifications(ctx, env, sender)
+	if verr != nil {
 		// A provider's key endpoint was unreachable: register
 		// unverified rather than reject — the derivation re-runs on
 		// the next renewal, or via the verify command.
-		d.log.Warn("inbox.auto_verify_unavailable", "caller", string(sender), "error", err.Error())
+		d.log.Warn("inbox.auto_verify_unavailable", "caller", string(sender), "error", verr.Error())
 	}
+	var lineage []*models.LineageKey
+	if prev != nil {
+		lineage = prev.Lineage
+	}
+	lineage, err = nextLineage(lineage, keys, verificationKeys(verifications), time.Now().UTC())
+	if err != nil {
+		d.log.Warn("inbox.rejected", "reason", "lineage", "caller", string(sender), "keys", len(keys))
+		return nil, ErrValidation.WithMessage("%s", err.Error())
+	}
+	verifier := pickVerifier(verifications, lineage)
 
 	// Stamp the discovery link to the public record before signing:
 	// stamping replaces any copy from an earlier countersign round —
@@ -151,12 +142,15 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	// unsigned (mutable post-signature) by design; the link is a
 	// discovery hint, not part of the trust claim.
 	d.stampDiscoveryLink(env)
+	d.dropRequestSignatures(env, sender)
 
-	// Countersign: adds Authority signature with iss=lookup,
-	// aud=sender, any preserved verifier claim, and a 90-day exp.
-	// UUID + digest unchanged.
+	// Countersign: adds the Authority signature for the subject's
+	// address and current key, with any verifier claim and a 90-day
+	// exp, and addresses the envelope back to the subject. UUID and
+	// digest unchanged.
 	if err := d.identity.CounterSign(env, CounterSignOptions{
 		Subject:  sender,
+		Key:      lineage[len(lineage)-1].JKT,
 		Verifier: verifier,
 	}); err != nil {
 		d.log.Error("inbox.countersign_failed", "caller", string(sender), "error", err.Error())
@@ -165,7 +159,7 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 
 	// Persist before delivery so the record exists even if the
 	// downstream POST fails.
-	rec, err := d.upsert(ctx, sender, env, verifier, renewal)
+	rec, err := d.upsert(ctx, prev, sender, env, verifier, lineage)
 	if err != nil {
 		d.log.Error("inbox.persist_failed", "caller", string(sender), "error", err.Error())
 		return nil, ErrInternal.WithCause(err)
@@ -174,7 +168,7 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		"caller", string(sender),
 		"envelope", env.Head.UUID.String(),
 		"verifier", string(verifier),
-		"renewal", renewal,
+		"lineage", len(lineage),
 	)
 
 	// Fire-and-forget delivery: the caller is acknowledged as soon
@@ -187,16 +181,44 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	return rec, nil
 }
 
+// checkWho confirms the subject of a registration is a sending
+// participant: GET /who on it must return a verified identity. A 204
+// marks a receive-only account, which cannot register.
+func (d *Registrations) checkWho(ctx context.Context, sender goblnet.Address) error {
+	_, err := d.client.Who(ctx, sender)
+	if err == nil {
+		return nil
+	}
+	// A transient outage while resolving the sender's who must not
+	// permanently reject the registration: senders stop retrying on
+	// 4xx, so surface a retryable condition instead.
+	if errors.Is(err, goblnet.ErrUnavailable) {
+		d.log.Warn("inbox.rejected", "reason", "who_unavailable", "caller", string(sender), "error", err.Error())
+		return ErrUnavailable.WithMessage("could not reach sender's public identity; retry later")
+	}
+	reason := "who_failed"
+	msg := "could not resolve sender's public identity"
+	switch {
+	case errors.Is(err, goblnet.ErrNoContent):
+		reason = "who_no_content"
+		msg = "sender does not publish a public identity; senders must serve GET /who"
+	case errors.Is(err, goblnet.ErrPending):
+		reason = "who_pending"
+		msg = "sender defers identity disclosure; senders must serve GET /who openly to register"
+	}
+	d.log.Warn("inbox.rejected", "reason", reason, "caller", string(sender), "error", err.Error())
+	return ErrForbidden.WithMessage("%s", msg)
+}
+
 // Verify marks an existing registration as identity-verified: it
 // derives the verifier from the countersignatures already on the
 // stored envelope — the most recent one from an accepted verification
-// provider — re-countersigns with the `verifier` claim naming it, and
-// delivers the result synchronously to the subject's inbox. The same
-// derivation runs automatically when a registration arrives carrying
-// a provider countersignature, so this command exists for recovery:
-// e.g. a provider added to the accepted list after its
-// countersignature was received. The registry names itself only when
-// it is on its own accepted list.
+// provider whose cnf names a key in the subject's lineage —
+// re-countersigns with the `verifier` claim naming it, and delivers
+// the result synchronously to the subject's inbox. The same derivation
+// runs automatically on every registration, so this command exists
+// for recovery: e.g. a provider added to the accepted list after its
+// countersignature was received.
 func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*models.Registration, error) {
 	rec, err := d.store.Get(ctx, addr)
 	if errors.Is(err, repos.ErrNotFound) {
@@ -208,14 +230,19 @@ func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*mode
 	if rec.CountersignedEnvelope == nil {
 		return nil, ErrValidation.WithMessage("registration for %s has no countersigned envelope", addr)
 	}
+	key := rec.CurrentKey()
+	if key == nil {
+		return nil, ErrValidation.WithMessage("registration for %s has no key lineage; the subject must register again", addr)
+	}
 	env := rec.CountersignedEnvelope
 
-	verifier, aerr := d.acceptedVerifier(ctx, env)
+	verifications, aerr := d.acceptedVerifications(ctx, env, addr)
+	verifier := pickVerifier(verifications, rec.Lineage)
 	if verifier == "" {
 		if aerr != nil {
 			return nil, ErrUnavailable.WithMessage("could not check verifier countersignatures: %s", aerr.Error())
 		}
-		return nil, ErrValidation.WithMessage("no countersignature from an accepted verifier on the registration envelope for %s", addr)
+		return nil, ErrValidation.WithMessage("no countersignature from an accepted verifier for a key of %s on the registration envelope", addr)
 	}
 
 	// Restamp the discovery link (deduplicating any earlier rounds)
@@ -224,6 +251,7 @@ func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*mode
 	d.stampDiscoveryLink(env)
 	if err := d.identity.CounterSign(env, CounterSignOptions{
 		Subject:  addr,
+		Key:      key.JKT,
 		Verifier: verifier,
 	}); err != nil {
 		return nil, ErrInternal.WithCause(err)
@@ -258,53 +286,88 @@ func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*mode
 	return rec, nil
 }
 
-// acceptedVerifier returns the address behind the most recent
-// unexpired countersignature on env whose signer is an accepted
-// verification provider and whose signature verifies against the
-// provider's published key, or "". The crypto check matters here:
-// naming a verifier whose signature consumers would reject makes the
-// registry attest to garbage. Latest-iat wins when several providers
-// have countersigned. The error is non-nil only when a candidate's
-// key endpoint was unreachable (net.ErrUnavailable) — the caller
-// decides whether that degrades or aborts.
-func (d *Registrations) acceptedVerifier(ctx context.Context, env *gobl.Envelope) (goblnet.Address, error) {
+// acceptedVerifications returns the valid countersignatures for
+// subject on env from accepted verification providers. The crypto
+// check matters: naming a verifier whose signature consumers would
+// reject makes the registry attest to garbage. The error is non-nil
+// only when a provider's key endpoint was unreachable
+// (net.ErrUnavailable) — the caller decides whether that degrades or
+// aborts.
+func (d *Registrations) acceptedVerifications(ctx context.Context, env *gobl.Envelope, subject goblnet.Address) ([]*goblnet.Verification, error) {
 	var (
-		best        goblnet.Address
-		bestIat     int64 = -1
+		found       []*goblnet.Verification
 		unavailable error
 	)
-	now := time.Now().UTC().Unix()
-	for _, sig := range env.Signatures {
-		p, err := head.SignedPayload(sig)
-		if err != nil {
-			continue
-		}
-		issuer, err := goblnet.ParseAddress(p.Iss)
-		if err != nil || !d.verifiers[issuer] {
-			continue
-		}
-		if p.ExpiresAt != 0 && now >= p.ExpiresAt {
-			continue
-		}
-		if p.IssuedAt <= bestIat {
-			continue
-		}
-		pub, err := d.client.FetchKey(ctx, issuer, sig.KeyID())
+	for v := range d.verifiers {
+		ver, err := d.client.FindVerification(ctx, env, v, subject)
 		if err != nil {
 			if errors.Is(err, goblnet.ErrUnavailable) {
 				unavailable = err
 			}
 			continue
 		}
-		if err := env.Head.Verify(sig, pub); err != nil {
+		found = append(found, ver)
+	}
+	return found, unavailable
+}
+
+// verificationKeys returns the cnf thumbprints of verifications.
+func verificationKeys(vs []*goblnet.Verification) []string {
+	keys := make([]string, 0, len(vs))
+	for _, v := range vs {
+		if v.Key != "" {
+			keys = append(keys, v.Key)
+		}
+	}
+	return keys
+}
+
+// pickVerifier returns the verifier of the most recent verification
+// whose cnf names a key in lineage, or "".
+func pickVerifier(vs []*goblnet.Verification, lineage []*models.LineageKey) goblnet.Address {
+	var best *goblnet.Verification
+	for _, v := range vs {
+		if !inLineage(lineage, v.Key) {
 			continue
 		}
-		best, bestIat = issuer, p.IssuedAt
+		if best == nil || v.IssuedAt.After(best.IssuedAt) {
+			best = v
+		}
 	}
-	if best == "" && unavailable != nil {
-		return "", unavailable
+	if best == nil {
+		return ""
 	}
-	return best, nil
+	return best.Verifier
+}
+
+func inLineage(lineage []*models.LineageKey, jkt string) bool {
+	if jkt == "" {
+		return false
+	}
+	for _, k := range lineage {
+		if k.JKT == jkt {
+			return true
+		}
+	}
+	return false
+}
+
+// dropRequestSignatures removes the subject's signatures for this
+// lookup: they confirmed the registration request and have served
+// their purpose (spec §5).
+func (d *Registrations) dropRequestSignatures(env *gobl.Envelope, sender goblnet.Address) {
+	sigs := env.Signatures[:0]
+	for _, sig := range env.Signatures {
+		if p, err := head.SignedPayload(sig); err == nil {
+			iss, ierr := goblnet.ParseAddress(p.Iss)
+			aud, aerr := goblnet.ParseAddress(p.Aud)
+			if ierr == nil && aerr == nil && iss == sender && aud == d.identity.Address() {
+				continue
+			}
+		}
+		sigs = append(sigs, sig)
+	}
+	env.Signatures = sigs
 }
 
 // verifyOwnSignatures checks every signature claiming this lookup's
@@ -380,76 +443,40 @@ func (d *Registrations) found(rec *models.Registration, err error) (*models.Regi
 	return rec, nil
 }
 
-// renewalVerifier resolves the verifier claim for a registration's
-// countersignature. An existing record whose countersigned envelope
-// has the same digest as the incoming one is renewing an unchanged
-// party and keeps its current verifier; any other case starts as
-// registered only (no verifier).
-func (d *Registrations) renewalVerifier(ctx context.Context, sender goblnet.Address, env *gobl.Envelope) (goblnet.Address, bool) {
-	prev, err := d.store.Get(ctx, sender)
-	if err != nil || prev.CountersignedEnvelope == nil || !sameDigest(prev.CountersignedEnvelope, env) {
-		return "", false
+// upsert writes the registration record for sender from the freshly
+// countersigned envelope, building on prev (nil for a first
+// registration, preserving the store's _rev token otherwise).
+func (d *Registrations) upsert(ctx context.Context, prev *models.Registration, sender goblnet.Address, env *gobl.Envelope, verifier goblnet.Address, lineage []*models.LineageKey) (*models.Registration, error) {
+	rec := prev
+	prevVerifier := goblnet.Address("")
+	if rec == nil {
+		rec = models.NewRegistration(sender, env.Head.UUID)
+	} else {
+		prevVerifier = rec.Verifier
+		rec.IncomingEnvelopeUUID = env.Head.UUID
+		rec.ReceivedAt = time.Now().UTC()
+		rec.DeliveryAttempts = 0
+		rec.LastDeliveryError = ""
+		rec.LastDeliveryAt = nil
 	}
-	return prev.Verifier, true
-}
-
-// sameDigest reports whether both envelopes carry the same document
-// digest.
-func sameDigest(a, b *gobl.Envelope) bool {
-	if a == nil || b == nil || a.Head == nil || b.Head == nil {
-		return false
-	}
-	da, db := a.Head.Digest, b.Head.Digest
-	return da != nil && db != nil && da.Algorithm == db.Algorithm && da.Value == db.Value
-}
-
-// upsert reads any existing record for sender (preserving the store's
-// _rev token for optimistic concurrency), then writes the new state
-// with the freshly countersigned envelope. A renewal keeps the
-// record's verification timestamp; a re-registration with changed
-// party data clears it — prior KYC no longer applies.
-func (d *Registrations) upsert(ctx context.Context, sender goblnet.Address, env *gobl.Envelope, verifier goblnet.Address, renewal bool) (*models.Registration, error) {
-	prev, err := d.store.Get(ctx, sender)
-	switch {
-	case errors.Is(err, repos.ErrNotFound):
-		r := models.NewRegistration(sender, env.Head.UUID)
-		r.Verifier = verifier
-		if verifier != "" {
-			now := time.Now().UTC()
-			r.VerifiedAt = &now
-		}
-		r.Status = models.StatusCountersigned
-		r.CountersignedEnvelope = env
-		if err := d.store.Put(ctx, r); err != nil {
-			return nil, err
-		}
-		return r, nil
-	case err != nil:
-		return nil, err
-	}
-	prevVerifier := prev.Verifier
-	prev.IncomingEnvelopeUUID = env.Head.UUID
-	prev.ReceivedAt = time.Now().UTC()
-	prev.Verifier = verifier
-	prev.Status = models.StatusCountersigned
-	prev.CountersignedEnvelope = env
-	prev.DeliveryAttempts = 0
-	prev.LastDeliveryError = ""
-	prev.LastDeliveryAt = nil
+	rec.Verifier = verifier
+	rec.Status = models.StatusCountersigned
+	rec.CountersignedEnvelope = env
+	rec.Lineage = lineage
 	// The verification timestamp follows the verifier: dropped when
 	// the verifier is dropped, kept across renewals with the same
 	// verifier, and stamped fresh when a (new) provider verifies.
 	switch {
 	case verifier == "":
-		prev.VerifiedAt = nil
-	case prev.VerifiedAt == nil || verifier != prevVerifier:
+		rec.VerifiedAt = nil
+	case rec.VerifiedAt == nil || verifier != prevVerifier:
 		now := time.Now().UTC()
-		prev.VerifiedAt = &now
+		rec.VerifiedAt = &now
 	}
-	if err := d.store.Put(ctx, prev); err != nil {
+	if err := d.store.Put(ctx, rec); err != nil {
 		return nil, err
 	}
-	return prev, nil
+	return rec, nil
 }
 
 // deliverAsync POSTs the countersigned envelope to the sender's own
