@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/go-kivik/kivik/v4 v4.5.2
 	github.com/invopop/couch v0.1.0
-	github.com/invopop/gobl v0.504.1-0.20260811215754-c231ee2feae5
+	github.com/invopop/gobl v0.512.1-0.20261113230617-62e54e64146b
 	github.com/magefile/mage v1.17.2
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
@@ -19,7 +19,7 @@ require (
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/expr-lang/expr v1.17.8 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect

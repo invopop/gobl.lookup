@@ -16,49 +16,63 @@ Copyright 2026 [Invopop S.L.](https://invopop.com).
 
 ## How registration works
 
-1. A GOBL Net node (e.g. a `gobl.dev` operator at
-   `alice.example`) signs an envelope containing its `org.Party`
-   and POSTs it to lookup's `/.well-known/gobl/inbox`. The
-   envelope's signed `iss=alice.example`,
-   `aud=lookup.gobl.org` (signed claims carry bare addresses — GOBL
-   Net is implied).
-2. Lookup verifies the signature, then confirms the sender checks
-   out as a *sending* participant: it performs `GET /who` on
-   `alice.example` (re-fetching her published key in the process)
-   and requires a verified, self-signed party. A `204 No Content`
-   marks a receive-only account and rejects the registration with
-   `403 Forbidden`.
-3. Lookup persists the envelope in CouchDB, countersigns it with
-   an Authority signature (`iss=lookup.gobl.org`,
-   `aud=alice.example`, `exp` = 90 days
-   out), and POSTs the **countersigned** envelope back to
-   `https://alice.example/.well-known/gobl/inbox` as a follow-up
-   message. The original POST is acknowledged with the standard
-   empty `202 Accepted` used for all inbox deliveries.
-4. Alice publishes the countersigned envelope on her `/who`. Any
-   GOBL Net verifier can now confirm that lookup has attested to
-   her registration via `net.Client.VerifyAuthority` /
-   `net.Client.VerifySender`.
+1. A GOBL Net node (e.g. a `gobl.dev` operator at `alice.example`)
+   sends its party envelope to lookup's `/.well-known/gobl/inbox`
+   as an ordinary delivery: `from` is `gobl:alice.example`, `to` is
+   `gobl:lookup.gobl.org`, and Alice signs it with `iss=alice.example`
+   and `aud=lookup.gobl.org`. No request token is needed; the
+   signature is the authentication.
+2. Lookup verifies the delivery (`net.Client.DeliveryKeys`), then
+   confirms the sender is a *sending* participant: it performs
+   `GET /who` on `alice.example` and requires a verified party. A
+   `204 No Content` marks a receive-only account and rejects the
+   registration with `403 Forbidden`.
+3. Lookup updates Alice's [key lineage](#key-lineage) from the keys
+   that signed the request, drops Alice's request signature,
+   countersigns as the Authority (`iss=lookup.gobl.org`,
+   `aud=alice.example`, `cnf` naming Alice's current key, `exp` = 90
+   days out), and addresses the envelope back (`from`
+   `gobl:lookup.gobl.org`, `to` `gobl:alice.example`). It persists
+   the record and acknowledges the POST with `202 Accepted`.
+4. Lookup delivers the countersigned envelope to
+   `https://alice.example/.well-known/gobl/inbox`.
+5. Alice publishes the envelope at her `/who`, signing each response
+   for its requester with the key the countersignature binds. Any
+   GOBL Net participant can now confirm her registration with
+   `net.Client.VerifyAuthority` / `net.Client.VerifySender`.
 
-No new protocol endpoints — registration uses the standard GOBL
-Net `/inbox` POST in both directions. Marking a registration as
-verified (spec §5.3, the `verifier` claim) happens automatically
-when the envelope carries a countersignature from an accepted
-verification provider; the full self-service flow is specified in
-[How verification works](#how-verification-works) below.
+No new protocol endpoints: registration uses the standard GOBL Net
+`/inbox` in both directions.
 
 ### Endorsement lifetime and renewal
 
-Every countersignature carries a 90-day `exp` claim — verifiers
-reject it after that, so parties renew by re-registering before it
-passes (Let's Encrypt style). A renewal that re-submits the
-**unchanged** party document (same digest) is countersigned with
-the party's current `verifier` claim: verified stays verified,
-while the verifier's own longer-lived countersignature (a year or
-more, in the spirit of EV certificates) continues to evidence the
-KYC. Submitting changed party data is a fresh registration — the
-verifier is dropped and KYC must be repeated.
+Every countersignature carries a 90-day `exp` claim, which receivers
+reject after it passes, so parties renew by registering again before
+then, Let's Encrypt style: submitting the envelope they hold,
+countersignatures and all, signed for the lookup. The lookup
+supersedes its own earlier countersignature. Changing the party
+document changes its digest, so a verifier's countersignature on the
+old document no longer applies and the registration starts
+unverified.
 
+### Key lineage
+
+The lookup keeps each address's key lineage (spec §7.3): the keys it
+has bound in turn, by RFC 7638 thumbprint and kid. The keys that
+sign a registration request decide what happens:
+
+| Request signed with                  | Result                                                     |
+|--------------------------------------|------------------------------------------------------------|
+| the current key (or a first key)     | renewal (or first registration): the key stays bound       |
+| the current key and a new key        | rollover: the new key joins the lineage and is bound       |
+| only a key that is not the current one | a lost key or a new holder: a new lineage starts         |
+| two keys at a first registration     | the key a verification binds starts the lineage, then rolls over |
+
+The lookup names a verifier only when its countersignature binds,
+with `cnf`, a key in the current lineage. A rollover therefore keeps
+a party verified with no work from its verifier, while a new holder
+of a lapsed domain can register the address but cannot be verified
+as its previous holder. Parties should rotate keys at renewal.
 
 ## How verification works
 
@@ -100,11 +114,10 @@ inbox deliveries.
    inspectable up front.
 4. **Session hand-off.** Lookup POSTs the party's **stored,
    countersigned envelope** to the verifier's session API in the
-   background, authenticated with a request token for
-   `lookup.gobl.org` (spec §5.5). Sending the stored envelope
-   pins the verification to an exact `uuid` + `dig`: the verifier
-   MUST countersign those bytes, so the checks and the eventual
-   signature cannot drift apart. The verifier answers with an
+   background. Sending the stored envelope pins the verification to
+   an exact `uuid` + `dig`: the verifier MUST countersign those
+   bytes, so the checks and the eventual signature cannot drift
+   apart. The verifier answers with an
    opaque, single-use session URL (or an error if it cannot serve
    the party's jurisdiction); lookup redirects the user's browser
    to it. Session URLs are unguessable on purpose —
@@ -118,35 +131,33 @@ inbox deliveries.
    on the verifier's side: the registry stays free. From here the
    provider runs its usual process (document checks, liveness,
    registry/UBO lookups, AML screening).
-6. **Countersign and return.** On success the verifier
-   countersigns the envelope from step 4 (`iss=<verifier>`,
-   `aud=<subject>`, `exp` a year or more — spec §5.3) and POSTs
-   the envelope back to lookup's standard `/inbox` with its own
-   request token. To the inbox this is an ordinary renewal: same
-   digest, first signature still the subject's, one extra
-   countersignature aboard. Failed or abandoned sessions simply
-   never produce a countersignature; sessions expire after a few
-   days and the verifier SHOULD notify lookup so the flow's status
-   page can say so.
-7. **Auto-verify.** When a renewal arrives carrying a valid
-   countersignature from a verifier on the trusted-verifier list,
-   lookup re-countersigns with `verifier=<that address>`
-   automatically — the same act as `gobl.lookup verify`, without
-   the operator. The stored record gains `verifier` +
-   `verified_at`.
-8. **Deliver and publish.** The now twice-countersigned envelope
-   (subject self-signature, verifier countersignature, lookup
-   countersignature naming the verifier) is delivered to the
-   subject's own `/inbox` — the standard registration delivery
-   path. The subject publishes it at its `/who`; only then do
-   receivers see the verified status. The verify status page tells
-   the user this last step is theirs.
+6. **Countersign and return.** As part of its checks the verifier
+   has the subject deliver the envelope from its address, which
+   proves control of the address and names the subject's key. On
+   success the verifier countersigns the envelope from step 4
+   (`iss=<verifier>`, `aud=<subject>`, `cnf` naming that key, `exp`
+   a year or more — spec §7.1) and delivers it to the **subject's**
+   inbox, `from` the verifier `to` the subject. Verifiers never
+   deliver to the lookup: GOBL Net has no forwarding. Failed or
+   abandoned sessions simply never produce a countersignature;
+   sessions expire after a few days.
+7. **Renew with the verification.** The subject registers again
+   with the envelope it received. Lookup finds the valid
+   countersignature from a verifier on its trusted list, checks its
+   `cnf` names a key in the subject's lineage, and countersigns
+   with `verifier=<that address>` — the same act as
+   `gobl.lookup verify`, without the operator. The stored record
+   gains `verifier` + `verified_at`.
+8. **Deliver and publish.** The countersigned envelope (verifier
+   countersignature and lookup countersignature naming the
+   verifier) is delivered to the subject's inbox, which publishes
+   it at its `/who`; only then do receivers see the verified
+   status.
 
-Renewal interplay is unchanged: re-registering the identical party
-document keeps the verifier claim; changed party data drops it and
-the party goes through verification again (the verifier's own
-countersignature attests to the *checked* data, not to future
-edits).
+Renewals keep the verifier as long as the subject presents the
+verifier's countersignature and it binds a key in the lineage;
+changed party data, or a lineage restarted by a lost key, drops it
+and the party goes through verification again.
 
 **Implementation gaps** (in rough order):
 
@@ -195,26 +206,25 @@ The domain never imports the transport layer.
 
 | Method | Path                                | Auth  | Purpose                                                  |
 |--------|-------------------------------------|-------|----------------------------------------------------------|
-| POST   | `/.well-known/gobl/inbox`           | token | Registration entry — must carry an `org.Party` document. |
-| GET    | `/.well-known/gobl/who`             | token | Lookup's identity (self-signed party envelope).          |
+| POST   | `/.well-known/gobl/inbox`           | signature | Registration entry — must carry an `org.Party` document. |
+| GET    | `/.well-known/gobl/who`             | token | Lookup's identity, signed for the requester.             |
 | GET    | `/.well-known/gobl/keys/<kid>`      | open  | Single published key.                                    |
 | GET    | `/.well-known/jwks.json`            | open  | Bulk JWK Set (for jwt.io-style tooling).                 |
 | GET    | `/parties/<address>`                | open  | Public registration record by address.                   |
 | GET    | `/parties/<uuid>`                   | open  | Public registration record by envelope UUID.             |
 | GET    | `/healthz`                          | open  | Liveness check.                                          |
 
-The who and inbox endpoints require a bearer request token (spec
-§5.5) minted from the caller's own published key; requests without
-a valid token get `401`, and `503` when the token cannot be checked
-because the issuer's key endpoint is unreachable (retry). The token's issuer may be a trusted
-intermediary transmitting on the registrant's behalf — the
-registration subject always comes from the envelope's own
-signature. Key discovery stays open (it is what makes token
-verification possible), and `/parties` remains an open directory of
-registered — hence deliberately public — identities. The lookup's
-own outbound requests (the sender `GET /who` eligibility check and
-countersigned-envelope deliveries) authenticate the same way, as
-`lookup.gobl.org`. Authenticated requests are logged with the
+The who endpoint requires a bearer request token (spec §6) minted
+from the caller's own published key; requests without a valid token
+get `401`, and `503` when the token cannot be checked because the
+issuer's key endpoint is unreachable (retry). The response is
+addressed and signed for the token's issuer. Inbox deliveries carry
+no token: the registration subject is the envelope's `from`,
+confirmed by its signature for the lookup. Key discovery stays open,
+and `/parties` remains an open directory of registered — hence
+deliberately public — identities. The lookup's own sender `GET /who`
+eligibility check authenticates as `lookup.gobl.org`; its deliveries
+carry no token. Authenticated requests are logged with the
 requester address, forming the request audit log.
 
 ## Quickstart (local dev)
@@ -258,7 +268,10 @@ registered address with id `registration:<address>`:
   "envelope": { ... full countersigned envelope ... },
   "delivery_attempts": 1,
   "last_delivery_at": "2026-06-07T...",
-  "verified_at": null
+  "verified_at": null,
+  "lineage": [
+    { "jkt": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", "kid": "...", "added_at": "2026-06-07T..." }
+  ]
 }
 ```
 
@@ -306,13 +319,15 @@ arrives from a secret independently of the host).
 
 ## Operations
 
-- **Re-registration vs renewal**: re-submitting the unchanged party
-  document (same digest) is a renewal — it keeps the current
-  `verifier` and `verified_at`, stamping a fresh 90-day
-  countersignature. Submitting **changed** party data drops the
-  `verifier` and clears `verified_at`; verifying again requires
-  another `gobl.lookup verify <address>` call. Audit trail lives in
-  CouchDB revisions.
+- **Renewal and key changes**: a request signed with the current key
+  renews, stamping a fresh 90-day countersignature; one signed with
+  the current and a new key rolls over to the new key. Either keeps
+  `verifier` and `verified_at` while the request carries a
+  verification bound to a key in the lineage. Changed party data, or
+  a request signed only with an unknown key, drops the `verifier`
+  and clears `verified_at`. Records without a lineage (registered
+  before key lineage) need one fresh registration. Audit trail lives
+  in CouchDB revisions.
 - **Delivery failures**: the inbox handler responds `202` once the
   record is persisted; delivery to the sender's `/inbox` happens
   asynchronously. Failures land on `Record.LastDeliveryError`;
