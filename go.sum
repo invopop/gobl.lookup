@@ -34,8 +34,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/invopop/couch v0.1.0 h1:ctMKLeIxnab9KW11KtEAQSl7RzGgMxndavLphx99LpY=
 github.com/invopop/couch v0.1.0/go.mod h1:xzBNVglDnLcpf1Z9BJxiIG1liESSIkMuvIczSl4zcls=
-github.com/invopop/gobl v0.512.1-0.20261113224301-2cdeefbda13a h1:ZOnidhzJBDS+5JAAw67twrNj4N8czVlTADDPOVXP8ac=
-github.com/invopop/gobl v0.512.1-0.20261113224301-2cdeefbda13a/go.mod h1:7xBxkslYmW2MdNvanWiVPUYIvR3Se+2dKLYA6Tg+A40=
+github.com/invopop/gobl v0.512.1-0.20261113230617-62e54e64146b h1:8E7dpk2LPgRsN5XZBUs3E16Zs7SwcX5MCsciA4DZzHg=
+github.com/invopop/gobl v0.512.1-0.20261113230617-62e54e64146b/go.mod h1:7xBxkslYmW2MdNvanWiVPUYIvR3Se+2dKLYA6Tg+A40=
 github.com/invopop/jsonschema v0.14.0 h1:MHQqLhvpNUZfw+hM3AZDYK7jxO8FZoQeQM77g8iyZjg=
 github.com/invopop/jsonschema v0.14.0/go.mod h1:ygm6C2EaVNMBDPpaPlnOA2pFAxBnxGjFlMZABxm9n2I=
 github.com/invopop/yaml v0.3.1 h1:f0+ZpmhfBSS4MhG+4HYseMdJhoeeopbSKbq5Rpeelso=
