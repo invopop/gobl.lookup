@@ -105,12 +105,12 @@ sign a registration request decide what happens. Only signatures made
 within the last 5 minutes count, so an earlier request cannot be
 replayed:
 
-| Request signed with                  | Result                                                     |
-|--------------------------------------|------------------------------------------------------------|
-| the current key (or a first key)     | renewal (or first registration): the key stays bound       |
-| the current key, naming a new key with `cnf`, and that new key | rollover: the new key joins the lineage and is bound |
-| only a key that is not the current one | a lost key or a new holder: a new lineage starts, if a verification binds that key |
-| two keys at a first registration     | the key a verification binds starts the lineage, then rolls over to the key it names |
+| Request signed with | Result |
+|---|---|
+| the current key | renewal: the key stays bound |
+| the current key, naming a new key with `cnf`, and that new key (`goblnet.SignKeyChange`) | key change: the new key joins the lineage and is bound |
+| one key not in the lineage | first registration, lost key or new holder: a new lineage starts, if a verification binds that key |
+| anything else, including two keys at a first registration or an earlier key | rejected with `422` |
 
 The lookup registers a party only when a verifier's countersignature
 binds, with `cnf`, a key in the current lineage. A rollover therefore
@@ -356,7 +356,7 @@ arrives from a secret independently of the host).
 - **Renewal and key changes**: a request signed with the current key
   renews, stamping a fresh 90-day countersignature; one also signed
   with a new key, which the current key's signature names with `cnf`
-  (`goblnet.Sign(env, key, from, to, head.WithConfirmation(next.JKT()))`),
+  (`goblnet.SignKeyChange`),
   rolls over to the new key. Requests must be signed within the last
   5 minutes. Either needs
   the request to carry a verification bound to a key in the

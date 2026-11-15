@@ -171,17 +171,19 @@ func (f *fixture) unverified(party *org.Party, keys ...*dsig.PrivateKey) *gobl.E
 }
 
 // signRequest signs env from the subject to the lookup with each of
-// keys, publishing each key at the subject's address. With two keys,
-// the first names the second as its successor: a key change.
+// keys, publishing each key at the subject's address. Two keys sign a
+// key change from the first to the second.
 func (f *fixture) signRequest(env *gobl.Envelope, keys ...*dsig.PrivateKey) {
 	f.t.Helper()
-	for i, k := range keys {
+	for _, k := range keys {
 		f.publish(k)
-		var opts []head.SignOption
-		if i == 0 && len(keys) == 2 {
-			opts = append(opts, head.WithConfirmation(keys[1].JKT()))
-		}
-		require.NoError(f.t, goblnet.Sign(env, k, f.subAddr, f.lookup.Address(), opts...))
+	}
+	if len(keys) == 2 {
+		require.NoError(f.t, goblnet.SignKeyChange(env, keys[0], keys[1], f.subAddr, f.lookup.Address()))
+		return
+	}
+	for _, k := range keys {
+		require.NoError(f.t, goblnet.Sign(env, k, f.subAddr, f.lookup.Address()))
 	}
 }
 
@@ -538,16 +540,22 @@ func TestKeyLineage(t *testing.T) {
 		assert.Equal(t, first, rec.VerifiedAt, "same verifier")
 	})
 
-	t.Run("two keys at a first registration follow the verification", func(t *testing.T) {
+	t.Run("two keys at a first registration are rejected", func(t *testing.T) {
 		f := newFixture(t)
+		assert.Equal(t, http.StatusUnprocessableEntity, f.register(f.request(f.party(), f.subject, dsig.NewES256Key())))
+		_, err := f.registry.Get(context.Background(), f.subAddr)
+		assert.ErrorIs(t, err, repos.ErrNotFound)
+	})
+
+	t.Run("a retired key cannot take the address back", func(t *testing.T) {
+		// The original verification still binds the first key, so a
+		// lineage restarted with it would be verified.
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.register(f.request(f.party(), f.subject)))
 		next := dsig.NewES256Key()
-		env := f.request(f.party(), f.subject, next)
-		require.Equal(t, http.StatusAccepted, f.register(env))
-		rec := f.record()
-		require.Len(t, rec.Lineage, 2)
-		assert.Equal(t, f.subject.JKT(), rec.Lineage[0].JKT)
-		assert.Equal(t, next.JKT(), rec.Lineage[1].JKT)
-		assert.Equal(t, f.verifAddr, rec.Verifier)
+		require.Equal(t, http.StatusAccepted, f.register(f.renewal(f.subject, next)))
+		assert.Equal(t, http.StatusUnprocessableEntity, f.register(f.renewal(f.subject)))
+		assert.Equal(t, next.JKT(), f.record().CurrentKey().JKT)
 	})
 
 	t.Run("two keys at a first registration without a verification are rejected", func(t *testing.T) {

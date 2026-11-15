@@ -137,7 +137,7 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	if prev != nil {
 		lineage = prev.Lineage
 	}
-	lineage, err = nextLineage(lineage, confs, verificationKeys(verifications), time.Now().UTC())
+	lineage, err = nextLineage(lineage, confs, time.Now().UTC())
 	if err != nil {
 		d.log.Warn("inbox.rejected", "reason", "lineage", "caller", string(sender), "keys", len(confs))
 		return nil, ErrValidation.WithMessage("%s", err.Error())
@@ -248,17 +248,6 @@ func (d *Registrations) acceptedVerifications(ctx context.Context, env *gobl.Env
 		found = append(found, vs...)
 	}
 	return found, unavailable
-}
-
-// verificationKeys returns the cnf thumbprints of verifications.
-func verificationKeys(vs []*goblnet.Verification) []string {
-	keys := make([]string, 0, len(vs))
-	for _, v := range vs {
-		if v.Key != "" {
-			keys = append(keys, v.Key)
-		}
-	}
-	return keys
 }
 
 // pickVerifier returns the verifier of the most recent verification
