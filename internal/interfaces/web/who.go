@@ -26,6 +26,7 @@ func handleWho(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
 		}
 		log.Info("who.served", "requester", string(requesterFrom(r.Context())))
 		w.Header().Set("Cache-Control", whoCacheControl)
+		w.Header().Set("Vary", "Authorization")
 		writeJSON(w, http.StatusOK, body)
 	}
 }

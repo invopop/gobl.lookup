@@ -38,10 +38,12 @@ func nextLineage(lineage []*models.LineageKey, keys []*dsig.PublicKey, verified 
 	case 2:
 		a, b := keys[0], keys[1]
 		if current != "" {
-			switch current {
-			case a.JKT():
+			// The other key must be new: a key bound before cannot
+			// become current again.
+			switch {
+			case current == a.JKT() && !inLineage(lineage, b.JKT()):
 				return append(lineage, entry(b)), nil
-			case b.JKT():
+			case current == b.JKT() && !inLineage(lineage, a.JKT()):
 				return append(lineage, entry(a)), nil
 			}
 			return nil, errLineage

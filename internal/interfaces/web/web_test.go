@@ -445,6 +445,10 @@ func TestKeyLineage(t *testing.T) {
 		rec = f.record()
 		require.Len(t, rec.Lineage, 3)
 		assert.Equal(t, f.verifAddr, rec.Verifier)
+
+		// A key bound before cannot become current again.
+		assert.Equal(t, http.StatusUnprocessableEntity, f.register(f.renewal(third, f.subject)))
+		assert.Equal(t, third.JKT(), f.record().CurrentKey().JKT)
 	})
 
 	t.Run("a new key alone needs a new verification", func(t *testing.T) {
@@ -659,6 +663,7 @@ func TestWhoGet(t *testing.T) {
 	defer resp.Body.Close() //nolint:errcheck
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "private, max-age=300", resp.Header.Get("Cache-Control"), "authorized response must not land in shared caches")
+	assert.Equal(t, "Authorization", resp.Header.Get("Vary"))
 
 	var got gobl.Envelope
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
