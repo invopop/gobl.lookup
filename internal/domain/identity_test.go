@@ -36,6 +36,11 @@ func newTestIdentity(t *testing.T) *domain.Identity {
 	return setup.Identity()
 }
 
+func TestPartyEnvelopeRejectsAnInvalidRequester(t *testing.T) {
+	_, err := newTestIdentity(t).PartyEnvelope("not an address")
+	assert.ErrorContains(t, err, "identity: sign party")
+}
+
 func TestPartyEnvelopeIsSignedForTheRequester(t *testing.T) {
 	id := newTestIdentity(t)
 
