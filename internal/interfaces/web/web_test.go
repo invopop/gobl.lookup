@@ -19,6 +19,7 @@ import (
 	"github.com/invopop/gobl/head"
 	goblnet "github.com/invopop/gobl/net"
 	"github.com/invopop/gobl/org"
+	"github.com/invopop/gobl/tax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -248,6 +249,17 @@ func (f *fixture) renewal(keys ...*dsig.PrivateKey) *gobl.Envelope {
 	require.NoError(f.t, json.Unmarshal(data, env))
 	f.signRequest(env, keys...)
 	return env
+}
+
+// partyRecord GETs path and decodes the public party record.
+func (f *fixture) partyRecord(path string) *models.PartyRecord {
+	f.t.Helper()
+	resp := f.get(path)
+	defer resp.Body.Close() //nolint:errcheck
+	require.Equal(f.t, http.StatusOK, resp.StatusCode)
+	out := new(models.PartyRecord)
+	require.NoError(f.t, json.NewDecoder(resp.Body).Decode(out))
+	return out
 }
 
 // waitForDeliveries spins until the mock sender records n deliveries
@@ -601,29 +613,81 @@ func TestInboxKeyUnavailable(t *testing.T) {
 
 func TestPartiesLookup(t *testing.T) {
 	f := newFixture(t)
-	env := f.request(f.party(), f.subject)
+	party := f.party()
+	party.TaxID = &tax.Identity{Country: "ES", Code: "B98602642"}
+	env := f.request(party, f.subject)
 	require.Equal(t, http.StatusAccepted, f.register(env))
 	_ = f.waitForDeliveries(1)
 
-	t.Run("by UUID", func(t *testing.T) {
-		resp := f.get("/parties/" + env.Head.UUID.String())
-		defer resp.Body.Close() //nolint:errcheck
-		require.Equal(t, http.StatusOK, resp.StatusCode)
-		var got gobl.Envelope
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-		assert.Equal(t, env.Head.UUID, got.Head.UUID)
+	t.Run("a private party by UUID gets the minimal record", func(t *testing.T) {
+		got := f.partyRecord("/parties/" + env.Head.UUID.String())
+		assert.Equal(t, f.subAddr, got.Address)
+		assert.Equal(t, f.verifAddr, got.Verifier)
+		assert.False(t, got.Public)
+		require.NotNil(t, got.VerifiedAt)
+		require.NotNil(t, got.RegisteredAt)
+		require.NotNil(t, got.RegisteredUntil)
+		assert.WithinDuration(t, got.RegisteredAt.Add(90*24*time.Hour), *got.RegisteredUntil, time.Second)
+		assert.Empty(t, got.Name)
+		assert.Nil(t, got.TaxID)
 	})
 
 	t.Run("by address", func(t *testing.T) {
-		resp := f.get("/parties/" + string(f.subAddr))
-		defer resp.Body.Close() //nolint:errcheck
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, f.subAddr, f.partyRecord("/parties/"+string(f.subAddr)).Address)
 	})
 
 	t.Run("not found", func(t *testing.T) {
 		resp := f.get("/parties/nobody.example")
 		defer resp.Body.Close() //nolint:errcheck
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestListing(t *testing.T) {
+	listing := func(env *gobl.Envelope, v string) *gobl.Envelope {
+		env.Head.Meta = cbc.Meta{domain.ListingKey: v}
+		return env
+	}
+
+	t.Run("a public listing adds the name and tax ID", func(t *testing.T) {
+		f := newFixture(t)
+		party := f.party()
+		party.TaxID = &tax.Identity{Country: "ES", Code: "B98602642"}
+		require.Equal(t, http.StatusAccepted, f.register(listing(f.request(party, f.subject), domain.ListingPublic)))
+		assert.True(t, f.record().Public)
+		got := f.partyRecord("/parties/" + string(f.subAddr))
+		assert.True(t, got.Public)
+		assert.Equal(t, "Alice", got.Name)
+		require.NotNil(t, got.TaxID)
+		assert.Equal(t, "B98602642", got.TaxID.Code.String())
+
+		sent := f.waitForDeliveries(1)
+		assert.Empty(t, sent[0].env.Head.Meta, "the listing is not passed on")
+		assert.Empty(t, f.record().CountersignedEnvelope.Head.Meta)
+	})
+
+	t.Run("a renewal without a listing keeps it, and private removes it", func(t *testing.T) {
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.register(listing(f.request(f.party(), f.subject), domain.ListingPublic)))
+		require.Equal(t, http.StatusAccepted, f.register(f.renewal(f.subject)))
+		assert.True(t, f.record().Public)
+
+		require.Equal(t, http.StatusAccepted, f.register(listing(f.renewal(f.subject), domain.ListingPrivate)))
+		assert.False(t, f.record().Public)
+		assert.Empty(t, f.partyRecord("/parties/"+string(f.subAddr)).Name)
+	})
+
+	t.Run("keeps other meta", func(t *testing.T) {
+		f := newFixture(t)
+		env := f.request(f.party(), f.subject)
+		env.Head.Meta = cbc.Meta{domain.ListingKey: domain.ListingPublic, "other": "x"}
+		require.Equal(t, http.StatusAccepted, f.register(env))
+		assert.Equal(t, cbc.Meta{"other": "x"}, f.record().CountersignedEnvelope.Head.Meta)
+	})
+
+	t.Run("rejects an unknown listing", func(t *testing.T) {
+		f := newFixture(t)
+		assert.Equal(t, http.StatusUnprocessableEntity, f.register(listing(f.request(f.party(), f.subject), "everyone")))
 	})
 }
 

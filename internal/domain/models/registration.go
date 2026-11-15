@@ -8,6 +8,7 @@ import (
 	"github.com/invopop/couch"
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/net"
+	"github.com/invopop/gobl/tax"
 	"github.com/invopop/gobl/uuid"
 )
 
@@ -51,6 +52,21 @@ type Registration struct {
 	// Lineage lists the subject keys bound in turn since the lineage
 	// last started (spec §7.3); the last is the current one.
 	Lineage []*LineageKey `json:"lineage,omitempty"`
+	// Public lists the party's name and tax ID in its public record.
+	Public bool `json:"public,omitempty"`
+}
+
+// PartyRecord is the public view of a registration served at
+// /parties. Name and TaxID are set only for a public listing.
+type PartyRecord struct {
+	Address         net.Address   `json:"address"`
+	Verifier        net.Address   `json:"verifier"`
+	VerifiedAt      *time.Time    `json:"verified_at,omitempty"`
+	RegisteredAt    *time.Time    `json:"registered_at,omitempty"`
+	RegisteredUntil *time.Time    `json:"registered_until,omitempty"`
+	Public          bool          `json:"public"`
+	Name            string        `json:"name,omitempty"`
+	TaxID           *tax.Identity `json:"tax_id,omitempty"`
 }
 
 // LineageKey is one subject key in a registration's lineage.

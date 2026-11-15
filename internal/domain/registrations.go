@@ -96,6 +96,11 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		d.log.Warn("inbox.rejected", "reason", "not_a_party", "caller", string(sender))
 		return nil, ErrValidation.WithMessage("registration envelope must contain an org.Party")
 	}
+	public, err := takeListing(env)
+	if err != nil {
+		d.log.Warn("inbox.rejected", "reason", "listing", "caller", string(sender))
+		return nil, err
+	}
 
 	// Any signature claiming to be this lookup's must actually be one:
 	// a renewal carries the previous countersignature, and a broken or
@@ -163,7 +168,7 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 
 	// Persist before delivery so the record exists even if the
 	// downstream POST fails.
-	rec, err := d.upsert(ctx, prev, sender, env, verifier, lineage)
+	rec, err := d.upsert(ctx, prev, sender, env, verifier, lineage, public)
 	if err != nil {
 		d.log.Error("inbox.persist_failed", "caller", string(sender), "error", err.Error())
 		return nil, ErrInternal.WithCause(err)
@@ -372,8 +377,9 @@ func (d *Registrations) found(rec *models.Registration, err error) (*models.Regi
 
 // upsert writes the registration record for sender from the freshly
 // countersigned envelope, building on prev (nil for a first
-// registration, preserving the store's _rev token otherwise).
-func (d *Registrations) upsert(ctx context.Context, prev *models.Registration, sender goblnet.Address, env *gobl.Envelope, verifier goblnet.Address, lineage []*models.LineageKey) (*models.Registration, error) {
+// registration, preserving the store's _rev token otherwise). A nil
+// public keeps the record's listing.
+func (d *Registrations) upsert(ctx context.Context, prev *models.Registration, sender goblnet.Address, env *gobl.Envelope, verifier goblnet.Address, lineage []*models.LineageKey, public *bool) (*models.Registration, error) {
 	rec := prev
 	prevVerifier := goblnet.Address("")
 	if rec == nil {
@@ -390,6 +396,9 @@ func (d *Registrations) upsert(ctx context.Context, prev *models.Registration, s
 	rec.Status = models.StatusCountersigned
 	rec.CountersignedEnvelope = env
 	rec.Lineage = lineage
+	if public != nil {
+		rec.Public = *public
+	}
 	// The verification timestamp is kept across renewals with the
 	// same verifier, and stamped fresh when another one verifies.
 	if rec.VerifiedAt == nil || verifier != prevVerifier {

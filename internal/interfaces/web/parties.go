@@ -11,8 +11,9 @@ import (
 
 // handleParty serves the public registry record at `/parties/<key>`.
 // `<key>` may be either an address (FQDN form, e.g. `alice.example`)
-// or an envelope UUID. Returns the countersigned envelope as
-// application/json on success, 404 when no record matches.
+// or an envelope UUID. Every registered party gets its address,
+// verifier and registration dates; a public listing adds its name and
+// tax ID. Returns 404 when no record matches.
 func handleParty(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := r.PathValue("key")
@@ -31,20 +32,21 @@ func handleParty(s *domain.Setup, log *slog.Logger) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if rec.CountersignedEnvelope == nil {
+		out := s.Registrations().PartyRecord(rec)
+		if out == nil {
 			// Record exists but no countersigned envelope yet
 			// (StatusReceived). Treat as not yet published.
 			log.Info("party.lookup", "key", key, "found", false, "status", string(rec.Status))
 			http.Error(w, "party record not yet published", http.StatusNotFound)
 			return
 		}
-		body, err := json.Marshal(rec.CountersignedEnvelope)
+		body, err := json.Marshal(out)
 		if err != nil {
 			log.Error("party.encode_failed", "key", key, "error", err.Error())
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		log.Info("party.lookup", "key", key, "found", true)
+		log.Info("party.lookup", "key", key, "found", true, "public", out.Public)
 		writeJSON(w, http.StatusOK, body)
 	}
 }

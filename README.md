@@ -52,6 +52,40 @@ works](#how-verification-works)), and then registers it.
 No new protocol endpoints: registration uses the standard GOBL Net
 `/inbox` in both directions.
 
+### Listing
+
+Every registered party has a public record at `/parties/<address>`
+(or `/parties/<uuid>`): its address, verifier, and registration
+dates. A party can also list its name and tax ID there, for discovery,
+by setting a key in its registration request's header `meta`:
+
+```json
+"meta": { "lookup-listing": "public" }
+```
+
+`private` removes them again. A request without the key keeps the
+current choice, and a new registration starts private. The lookup
+removes the key before countersigning, so it never appears in the
+envelope the party publishes. Contacts and other party details are
+never listed: they stay behind the party's own `/who`.
+
+```json
+{
+  "address": "alice.example",
+  "verifier": "verify.example",
+  "verified_at": "2026-11-02T10:14:00Z",
+  "registered_at": "2026-11-02T10:14:05Z",
+  "registered_until": "2027-01-31T10:14:05Z",
+  "public": true,
+  "name": "Alice SL",
+  "tax_id": { "country": "ES", "code": "B98602642" }
+}
+```
+
+The record is a discovery and validation aid, not a trust decision: a
+receiver still checks the countersignatures on the envelope it gets
+from the party's `/who` (spec §7.2).
+
 ### Endorsement lifetime and renewal
 
 Every countersignature carries a 90-day `exp` claim, which receivers
@@ -209,7 +243,7 @@ The domain never imports the transport layer.
 | GET    | `/.well-known/gobl/who`             | token | Lookup's identity, signed for the requester.             |
 | GET    | `/.well-known/gobl/keys/<kid>`      | open  | Single published key.                                    |
 | GET    | `/.well-known/jwks.json`            | open  | Bulk JWK Set (for jwt.io-style tooling).                 |
-| GET    | `/parties/<address>`                | open  | Public registration record by address.                   |
+| GET    | `/parties/<address>`                | open  | Public registration record by address ([Listing](#listing)). |
 | GET    | `/parties/<uuid>`                   | open  | Public registration record by envelope UUID.             |
 | GET    | `/healthz`                          | open  | Liveness check.                                          |
 
@@ -220,8 +254,8 @@ issuer's key endpoint is unreachable (retry). The response is
 addressed and signed for the token's issuer. Inbox deliveries carry
 no token: the registration subject is the envelope's `from`,
 confirmed by its signature for the lookup. Key discovery stays open,
-and `/parties` remains an open directory of verified — hence
-deliberately public — identities. The lookup's own sender `GET /who`
+and `/parties` remains an open directory of registrations, listing
+party details only where the party chose to ([Listing](#listing)). The lookup's own sender `GET /who`
 eligibility check authenticates as `lookup.gobl.org`; its deliveries
 carry no token. Authenticated requests are logged with the
 requester address, forming the request audit log.
