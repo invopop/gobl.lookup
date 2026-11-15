@@ -5,7 +5,8 @@
 ### Changed
 
 - Registrations follow the latest GOBL Net spec. A request is an ordinary delivery from the subject to the lookup, confirmed by its signature for the lookup, and needs no request token; the subject is its `from` address. The lookup drops the request signature, countersigns with a `cnf` claim binding the subject's key, and addresses the envelope back to the subject.
-- The lookup keeps each address's key lineage (`Registration.Lineage`). A request signed with the current and a new key rolls over to the new key; one signed only with an unknown key starts a new lineage. A verifier is named only when its countersignature binds, with `cnf`, a key in the lineage, so rollovers keep a party verified and a new holder of an address cannot inherit its verification.
+- The lookup keeps each address's key lineage (`Registration.Lineage`). A request signed with the current and a new key rolls over to the new key; one signed only with an unknown key starts a new lineage, and needs a verification for that key. Rollovers need no new verification, and a new holder of an address cannot inherit its verification.
+- The lookup registers only verified parties: a registration needs a countersignature from an accepted verifier binding, with `cnf`, a key in the subject's lineage, and is rejected with `403` without one (`503` when the verifier's key cannot be fetched). The `gobl.lookup verify` command is removed; a subject registers again instead.
 - Verifiers are no longer accepted delivering to the lookup on a subject's behalf; the subject registers again with the verified envelope. The renewal rule based on an unchanged digest is replaced by the lineage check.
 - `GET /.well-known/gobl/who` answers with the lookup's party envelope addressed and signed for the requester.
 - Deliveries to subjects carry no request token.

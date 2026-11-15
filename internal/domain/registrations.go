@@ -67,7 +67,9 @@ func newRegistrations(store RegistrationStore, identity *Identity, client *gobln
 // envelope's from address, confirmed by a signature for this lookup
 // with the subject's current key, a new key, or both (spec §7.3). It
 // resolves the subject's own GET /who to confirm the address serves an
-// identity, updates the subject's key lineage, countersigns the
+// identity, updates the subject's key lineage, and requires a
+// verification from an accepted provider binding a key in it: the
+// lookup registers only verified parties. It countersigns the
 // envelope as the Authority, persists the record, and queues
 // asynchronous delivery back to the subject's inbox. The persisted
 // record is returned once stored; delivery happens in the background.
@@ -119,12 +121,6 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	// only while that key is in the subject's lineage, which a rollover
 	// extends and a lost key or a new holder of the address restarts.
 	verifications, verr := d.acceptedVerifications(ctx, env, sender)
-	if verr != nil {
-		// A provider's key endpoint was unreachable: register
-		// unverified rather than reject — the derivation re-runs on
-		// the next renewal, or via the verify command.
-		d.log.Warn("inbox.auto_verify_unavailable", "caller", string(sender), "error", verr.Error())
-	}
 	var lineage []*models.LineageKey
 	if prev != nil {
 		lineage = prev.Lineage
@@ -135,6 +131,14 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		return nil, ErrValidation.WithMessage("%s", err.Error())
 	}
 	verifier := pickVerifier(verifications, lineage)
+	if verifier == "" {
+		if verr != nil {
+			d.log.Warn("inbox.rejected", "reason", "verifier_unavailable", "caller", string(sender), "error", verr.Error())
+			return nil, ErrUnavailable.WithMessage("could not reach a verifier's key endpoint; retry later")
+		}
+		d.log.Warn("inbox.rejected", "reason", "unverified", "caller", string(sender))
+		return nil, ErrForbidden.WithMessage("registration needs a countersignature from an accepted verifier binding the subject's key")
+	}
 
 	// Stamp the discovery link to the public record before signing:
 	// stamping replaces any copy from an earlier countersign round —
@@ -145,7 +149,7 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	d.dropRequestSignatures(env, sender)
 
 	// Countersign: adds the Authority signature for the subject's
-	// address and current key, with any verifier claim and a 90-day
+	// address and current key, with the verifier claim and a 90-day
 	// exp, and addresses the envelope back to the subject. UUID and
 	// digest unchanged.
 	if err := d.identity.CounterSign(env, CounterSignOptions{
@@ -210,103 +214,26 @@ func (d *Registrations) checkWho(ctx context.Context, sender goblnet.Address) er
 	return ErrForbidden.WithMessage("%s", msg)
 }
 
-// Verify marks an existing registration as identity-verified: it
-// derives the verifier from the countersignatures already on the
-// stored envelope — the most recent one from an accepted verification
-// provider whose cnf names a key in the subject's lineage —
-// re-countersigns with the `verifier` claim naming it, and delivers
-// the result synchronously to the subject's inbox. The same derivation
-// runs automatically on every registration, so this command exists
-// for recovery: e.g. a provider added to the accepted list after its
-// countersignature was received.
-func (d *Registrations) Verify(ctx context.Context, addr goblnet.Address) (*models.Registration, error) {
-	rec, err := d.store.Get(ctx, addr)
-	if errors.Is(err, repos.ErrNotFound) {
-		return nil, ErrNotFound.WithMessage("no registration for %s", addr)
-	}
-	if err != nil {
-		return nil, ErrInternal.WithCause(err)
-	}
-	if rec.CountersignedEnvelope == nil {
-		return nil, ErrValidation.WithMessage("registration for %s has no countersigned envelope", addr)
-	}
-	key := rec.CurrentKey()
-	if key == nil {
-		return nil, ErrValidation.WithMessage("registration for %s has no key lineage; the subject must register again", addr)
-	}
-	env := rec.CountersignedEnvelope
-
-	verifications, aerr := d.acceptedVerifications(ctx, env, addr)
-	verifier := pickVerifier(verifications, rec.Lineage)
-	if verifier == "" {
-		if aerr != nil {
-			return nil, ErrUnavailable.WithMessage("could not check verifier countersignatures: %s", aerr.Error())
-		}
-		return nil, ErrValidation.WithMessage("no countersignature from an accepted verifier for a key of %s on the registration envelope", addr)
-	}
-
-	// Restamp the discovery link (deduplicating any earlier rounds)
-	// and stamp a fresh Authority signature carrying the verifier
-	// claim onto the existing envelope.
-	d.stampDiscoveryLink(env)
-	if err := d.identity.CounterSign(env, CounterSignOptions{
-		Subject:  addr,
-		Key:      key.JKT,
-		Verifier: verifier,
-	}); err != nil {
-		return nil, ErrInternal.WithCause(err)
-	}
-	rec.Verifier = verifier
-	now := time.Now().UTC()
-	rec.VerifiedAt = &now
-	rec.Status = models.StatusCountersigned
-	// Count the attempt up front (as the async path does) so a failure is
-	// still reflected in DeliveryAttempts.
-	rec.DeliveryAttempts++
-	rec.LastDeliveryAt = &now
-
-	sendCtx, cancel := context.WithTimeout(ctx, deliveryTimeout)
-	defer cancel()
-	if err := d.sender.Send(sendCtx, addr, env); err != nil {
-		rec.Status = models.StatusFailed
-		rec.LastDeliveryError = err.Error()
-		_ = d.store.Put(ctx, rec)
-		return nil, ErrInternal.WithCause(fmt.Errorf("deliver verified envelope: %w", err))
-	}
-	rec.Status = models.StatusDelivered
-	rec.LastDeliveryError = ""
-	if err := d.store.Put(ctx, rec); err != nil {
-		return nil, ErrInternal.WithCause(err)
-	}
-	d.log.Info("verified registration",
-		"address", string(addr),
-		"envelope", env.Head.UUID.String(),
-		"verifier", string(verifier),
-	)
-	return rec, nil
-}
-
 // acceptedVerifications returns the valid countersignatures for
 // subject on env from accepted verification providers. The crypto
 // check matters: naming a verifier whose signature consumers would
 // reject makes the registry attest to garbage. The error is non-nil
 // only when a provider's key endpoint was unreachable
-// (net.ErrUnavailable) — the caller decides whether that degrades or
-// aborts.
+// (net.ErrUnavailable).
 func (d *Registrations) acceptedVerifications(ctx context.Context, env *gobl.Envelope, subject goblnet.Address) ([]*goblnet.Verification, error) {
 	var (
 		found       []*goblnet.Verification
 		unavailable error
 	)
 	for v := range d.verifiers {
-		ver, err := d.client.FindVerification(ctx, env, v, subject)
+		vs, err := d.client.FindVerifications(ctx, env, v, subject)
 		if err != nil {
 			if errors.Is(err, goblnet.ErrUnavailable) {
 				unavailable = err
 			}
 			continue
 		}
-		found = append(found, ver)
+		found = append(found, vs...)
 	}
 	return found, unavailable
 }
@@ -463,13 +390,9 @@ func (d *Registrations) upsert(ctx context.Context, prev *models.Registration, s
 	rec.Status = models.StatusCountersigned
 	rec.CountersignedEnvelope = env
 	rec.Lineage = lineage
-	// The verification timestamp follows the verifier: dropped when
-	// the verifier is dropped, kept across renewals with the same
-	// verifier, and stamped fresh when a (new) provider verifies.
-	switch {
-	case verifier == "":
-		rec.VerifiedAt = nil
-	case rec.VerifiedAt == nil || verifier != prevVerifier:
+	// The verification timestamp is kept across renewals with the
+	// same verifier, and stamped fresh when another one verifies.
+	if rec.VerifiedAt == nil || verifier != prevVerifier {
 		now := time.Now().UTC()
 		rec.VerifiedAt = &now
 	}

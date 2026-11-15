@@ -56,7 +56,6 @@ func rootCmd() *cobra.Command {
 		"emit logs as structured JSON on stderr (env LOG_JSON)")
 	cmd.AddCommand(initCmd())
 	cmd.AddCommand(serveCmd())
-	cmd.AddCommand(verifyCmd())
 	cmd.AddCommand(versionCmd())
 	return cmd
 }
@@ -139,7 +138,7 @@ func printError(err error) {
 	slog.Error("command failed", attrs...)
 }
 
-// stdOut is a small shim so the init / verify commands can write
+// stdOut is a small shim so the init command can write
 // human-readable confirmation to stdout without going through slog.
 func stdOut(cmd *cobra.Command) io.Writer {
 	return cmd.OutOrStdout()

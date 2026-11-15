@@ -16,7 +16,7 @@ import (
 	"github.com/invopop/couch"
 )
 
-// Config holds the options shared by the serve and verify commands.
+// Config holds the options of the serve command.
 //
 // CouchDB may be configured in two ways: a single connection URL
 // (CouchURL, from --couchdb / COUCHDB_URL — convenient for local dev),
@@ -47,9 +47,8 @@ type Config struct {
 	// https://<domain>.
 	PublicBaseURL string
 	// Verifiers lists the GOBL Net addresses of the verification
-	// providers this registry accepts: their countersignatures are
-	// named in `verifier` claims, both automatically at registration
-	// and by the verify command.
+	// providers this registry accepts: a registration needs a
+	// countersignature from one, which is named in its `verifier` claim.
 	Verifiers []string
 	// ShutdownTimeout bounds graceful shutdown of the HTTP server.
 	ShutdownTimeout time.Duration

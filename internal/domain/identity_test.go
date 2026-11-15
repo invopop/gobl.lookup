@@ -99,7 +99,14 @@ func TestCounterSignRequiresAKey(t *testing.T) {
 	id := newTestIdentity(t)
 	env, err := gobl.Envelop(&note.Message{Content: "party doc"})
 	require.NoError(t, err)
-	require.Error(t, id.CounterSign(env, domain.CounterSignOptions{Subject: "alice.example"}))
+	require.Error(t, id.CounterSign(env, domain.CounterSignOptions{Subject: "alice.example", Verifier: "kyc.example"}))
+}
+
+func TestCounterSignRequiresAVerifier(t *testing.T) {
+	id := newTestIdentity(t)
+	env, err := gobl.Envelop(&note.Message{Content: "party doc"})
+	require.NoError(t, err)
+	require.Error(t, id.CounterSign(env, domain.CounterSignOptions{Subject: "alice.example", Key: "jkt"}))
 }
 
 func TestCounterSignNilEnvelope(t *testing.T) {

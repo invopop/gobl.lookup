@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -152,8 +151,17 @@ func (f *fixture) party() *org.Party {
 }
 
 // request envelopes party as a registration request from the subject
-// to the lookup, signed with each of keys.
+// to the lookup, signed with each of keys, and countersigned by the
+// fixture verifier binding the first.
 func (f *fixture) request(party *org.Party, keys ...*dsig.PrivateKey) *gobl.Envelope {
+	f.t.Helper()
+	env := f.unverified(party, keys...)
+	f.counterSignAsVerifier(env, keys[0])
+	return env
+}
+
+// unverified is request without the verifier's countersignature.
+func (f *fixture) unverified(party *org.Party, keys ...*dsig.PrivateKey) *gobl.Envelope {
 	f.t.Helper()
 	env, err := gobl.Envelop(party)
 	require.NoError(f.t, err)
@@ -297,7 +305,8 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	// so the record may already have advanced to delivered.
 	rec := f.record()
 	assert.Contains(t, []models.Status{models.StatusCountersigned, models.StatusDelivered}, rec.Status)
-	assert.Empty(t, rec.Verifier, "initial registration carries no verifier")
+	assert.Equal(t, f.verifAddr, rec.Verifier)
+	assert.NotNil(t, rec.VerifiedAt)
 	require.Len(t, rec.Lineage, 1)
 	assert.Equal(t, f.subject.JKT(), rec.Lineage[0].JKT)
 	assert.Equal(t, f.subject.ID(), rec.Lineage[0].KID)
@@ -305,14 +314,14 @@ func TestInboxAcceptsRegistration(t *testing.T) {
 	// The request signature is dropped; the lookup's countersignature
 	// addresses the envelope back to the subject.
 	out := rec.CountersignedEnvelope
-	require.Len(t, out.Signatures, 1)
+	require.Len(t, out.Signatures, 2, "verifier + lookup")
 	assert.Equal(t, f.lookup.Address().URI(), out.Head.From)
 	assert.Equal(t, f.subAddr.URI(), out.Head.To)
 	p := f.authority(out)
 	assert.Equal(t, f.subAddr.String(), p.Aud)
 	require.NotNil(t, p.Confirmation)
 	assert.Equal(t, f.subject.JKT(), p.Confirmation.JKT)
-	assert.Empty(t, p.Verifier)
+	assert.Equal(t, f.verifAddr.String(), p.Verifier)
 	assert.Greater(t, p.ExpiresAt, time.Now().Add(89*24*time.Hour).Unix())
 	assert.LessOrEqual(t, p.ExpiresAt, time.Now().Add(90*24*time.Hour).Unix())
 
@@ -408,7 +417,7 @@ func TestKeyLineage(t *testing.T) {
 		require.Equal(t, http.StatusAccepted, f.register(f.renewal(f.subject)))
 		rec := f.record()
 		assert.Equal(t, first, rec.Lineage)
-		require.Len(t, rec.CountersignedEnvelope.Signatures, 1, "request signature dropped, own countersignature superseded")
+		require.Len(t, rec.CountersignedEnvelope.Signatures, 2, "request signature dropped, own countersignature superseded")
 		assert.Equal(t, 1, linkCount(rec.CountersignedEnvelope), "restamped, not duplicated")
 		require.NoError(t, rec.CountersignedEnvelope.Validate())
 	})
@@ -416,7 +425,6 @@ func TestKeyLineage(t *testing.T) {
 	t.Run("rollover signed with both keys keeps the verifier", func(t *testing.T) {
 		f := newFixture(t)
 		env := f.request(f.party(), f.subject)
-		f.counterSignAsVerifier(env, f.subject)
 		require.Equal(t, http.StatusAccepted, f.register(env))
 		require.Equal(t, f.verifAddr, f.record().Verifier)
 
@@ -439,29 +447,32 @@ func TestKeyLineage(t *testing.T) {
 		assert.Equal(t, f.verifAddr, rec.Verifier)
 	})
 
-	t.Run("a new key alone starts a new lineage and drops the verifier", func(t *testing.T) {
+	t.Run("a new key alone needs a new verification", func(t *testing.T) {
 		// A lost key, or a new holder of the address: the previous
 		// verification does not carry over.
 		f := newFixture(t)
-		env := f.request(f.party(), f.subject)
-		f.counterSignAsVerifier(env, f.subject)
-		require.Equal(t, http.StatusAccepted, f.register(env))
+		require.Equal(t, http.StatusAccepted, f.register(f.request(f.party(), f.subject)))
+		first := f.record().VerifiedAt
 
 		newHolder := dsig.NewES256Key()
-		require.Equal(t, http.StatusAccepted, f.register(f.renewal(newHolder)))
+		require.Equal(t, http.StatusForbidden, f.register(f.renewal(newHolder)))
+		assert.Equal(t, f.subject.JKT(), f.record().CurrentKey().JKT, "rejected request leaves the lineage")
+
+		env := f.renewal(newHolder)
+		f.counterSignAsVerifier(env, newHolder)
+		require.Equal(t, http.StatusAccepted, f.register(env))
 		rec := f.record()
 		require.Len(t, rec.Lineage, 1)
 		assert.Equal(t, newHolder.JKT(), rec.Lineage[0].JKT)
-		assert.Empty(t, rec.Verifier)
-		assert.Nil(t, rec.VerifiedAt)
-		assert.Empty(t, f.authority(rec.CountersignedEnvelope).Verifier)
+		assert.Equal(t, f.verifAddr, rec.Verifier)
+		assert.Equal(t, newHolder.JKT(), f.authority(rec.CountersignedEnvelope).Confirmation.JKT)
+		assert.Equal(t, first, rec.VerifiedAt, "same verifier")
 	})
 
 	t.Run("two keys at a first registration follow the verification", func(t *testing.T) {
 		f := newFixture(t)
 		next := dsig.NewES256Key()
 		env := f.request(f.party(), f.subject, next)
-		f.counterSignAsVerifier(env, f.subject)
 		require.Equal(t, http.StatusAccepted, f.register(env))
 		rec := f.record()
 		require.Len(t, rec.Lineage, 2)
@@ -472,7 +483,7 @@ func TestKeyLineage(t *testing.T) {
 
 	t.Run("two keys at a first registration without a verification are rejected", func(t *testing.T) {
 		f := newFixture(t)
-		env := f.request(f.party(), f.subject, dsig.NewES256Key())
+		env := f.unverified(f.party(), f.subject, dsig.NewES256Key())
 		assert.Equal(t, http.StatusUnprocessableEntity, f.register(env))
 	})
 
@@ -484,11 +495,10 @@ func TestKeyLineage(t *testing.T) {
 	})
 }
 
-func TestAutoVerify(t *testing.T) {
+func TestVerification(t *testing.T) {
 	t.Run("names an accepted verifier binding the subject's key", func(t *testing.T) {
 		f := newFixture(t)
 		env := f.request(f.party(), f.subject)
-		f.counterSignAsVerifier(env, f.subject)
 		require.Equal(t, http.StatusAccepted, f.register(env))
 		rec := f.record()
 		assert.Equal(t, f.verifAddr, rec.Verifier)
@@ -499,7 +509,6 @@ func TestAutoVerify(t *testing.T) {
 	t.Run("survives renewal of the delivered envelope", func(t *testing.T) {
 		f := newFixture(t)
 		env := f.request(f.party(), f.subject)
-		f.counterSignAsVerifier(env, f.subject)
 		require.Equal(t, http.StatusAccepted, f.register(env))
 		verifiedAt := f.record().VerifiedAt
 
@@ -511,6 +520,19 @@ func TestAutoVerify(t *testing.T) {
 		require.Len(t, final.Signatures, 2, "lookup + verifier, nothing stale")
 		assert.Equal(t, 1, sigCountBy(final, f.lookup.Address()))
 		assert.Equal(t, 1, sigCountBy(final, f.verifAddr))
+	})
+
+	t.Run("rejects a registration without one", func(t *testing.T) {
+		f := newFixture(t)
+		assert.Equal(t, http.StatusForbidden, f.register(f.unverified(f.party(), f.subject)))
+		_, err := f.registry.Get(context.Background(), f.subAddr)
+		assert.ErrorIs(t, err, repos.ErrNotFound)
+	})
+
+	t.Run("an unreachable verifier key is retryable", func(t *testing.T) {
+		f := newFixture(t)
+		f.fetcher.errs[f.verifAddr.KeyURL(f.verifier.ID())] = fmt.Errorf("%w: HTTP 503", goblnet.ErrUnavailable)
+		assert.Equal(t, http.StatusServiceUnavailable, f.register(f.request(f.party(), f.subject)))
 	})
 
 	ignored := map[string]func(f *fixture, env *gobl.Envelope){
@@ -534,75 +556,13 @@ func TestAutoVerify(t *testing.T) {
 		},
 	}
 	for name, stamp := range ignored {
-		t.Run("ignores a verification "+name, func(t *testing.T) {
+		t.Run("rejects a verification "+name, func(t *testing.T) {
 			f := newFixture(t)
-			env := f.request(f.party(), f.subject)
+			env := f.unverified(f.party(), f.subject)
 			stamp(f, env)
-			require.Equal(t, http.StatusAccepted, f.register(env), "registration proceeds unverified")
-			rec := f.record()
-			assert.Empty(t, rec.Verifier)
-			assert.Nil(t, rec.VerifiedAt)
+			assert.Equal(t, http.StatusForbidden, f.register(env))
 		})
 	}
-}
-
-func TestVerifyDerivesFromStoredEnvelope(t *testing.T) {
-	// A provider countersignature received while the provider was not
-	// yet on the accepted list is picked up later by the verify
-	// command — the recovery path.
-	f := newFixture(t)
-	bare := domain.New(domain.Deps{
-		Identity:      f.lookup,
-		Registrations: f.registry,
-		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher), goblnet.WithIdentity(f.lookup.Address(), f.lookup.PrivateKey)),
-		Sender:        f.sender,
-		PublicBaseURL: "https://lookup.example",
-		Logger:        discardLogger(),
-	})
-	env := f.request(f.party(), f.subject)
-	f.counterSignAsVerifier(env, f.subject)
-	_, err := bare.Registrations().Register(context.Background(), env)
-	require.NoError(t, err)
-	// Let the async delivery goroutine finish its Put before Verify
-	// reads and rewrites the record.
-	require.NotEmpty(t, f.waitForDeliveries(1))
-	require.Empty(t, f.record().Verifier)
-
-	// Simulate a record poisoned with a duplicate discovery link: the
-	// verify command heals it.
-	rec := f.record()
-	rec.CountersignedEnvelope.Head.Links = append(rec.CountersignedEnvelope.Head.Links,
-		rec.CountersignedEnvelope.Head.Links[0])
-	require.NoError(t, f.registry.Put(context.Background(), rec))
-
-	setup := domain.New(domain.Deps{
-		Identity:      f.lookup,
-		Registrations: f.registry,
-		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher)),
-		Sender:        f.sender,
-		Verifiers:     []goblnet.Address{f.verifAddr},
-		PublicBaseURL: "https://lookup.example",
-		Logger:        discardLogger(),
-	})
-	rec, err = setup.Registrations().Verify(context.Background(), f.subAddr)
-	require.NoError(t, err)
-	assert.Equal(t, f.verifAddr, rec.Verifier)
-	assert.NotNil(t, rec.VerifiedAt)
-	assert.Equal(t, 1, linkCount(rec.CountersignedEnvelope))
-	require.NoError(t, rec.CountersignedEnvelope.Validate())
-	p := f.authority(rec.CountersignedEnvelope)
-	assert.Equal(t, f.subject.JKT(), p.Confirmation.JKT)
-	assert.Equal(t, 1, sigCountBy(rec.CountersignedEnvelope, f.lookup.Address()))
-}
-
-func TestVerifyWithoutAcceptedCountersignature(t *testing.T) {
-	f := newFixture(t)
-	require.Equal(t, http.StatusAccepted, f.register(f.request(f.party(), f.subject)))
-	require.NotEmpty(t, f.waitForDeliveries(1))
-
-	_, err := f.setup().Registrations().Verify(context.Background(), f.subAddr)
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, domain.ErrValidation))
 }
 
 func TestInboxChecksTheSendersWho(t *testing.T) {
@@ -762,20 +722,6 @@ func TestHealth(t *testing.T) {
 	resp := f.get("/healthz")
 	defer resp.Body.Close() //nolint:errcheck
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-}
-
-// setup returns a domain setup sharing the fixture's store, sender and
-// fetcher, accepting the fixture's verifier.
-func (f *fixture) setup() *domain.Setup {
-	return domain.New(domain.Deps{
-		Identity:      f.lookup,
-		Registrations: f.registry,
-		Client:        goblnet.NewClient(goblnet.WithFetcher(f.fetcher), goblnet.WithIdentity(f.lookup.Address(), f.lookup.PrivateKey)),
-		Sender:        f.sender,
-		Verifiers:     []goblnet.Address{f.verifAddr},
-		PublicBaseURL: "https://lookup.example",
-		Logger:        discardLogger(),
-	})
 }
 
 // linkCount counts the lookup discovery links on an envelope.

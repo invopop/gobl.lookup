@@ -101,7 +101,7 @@ type CounterSignOptions struct {
 	Key string
 	// Verifier names the participant that performed identity
 	// verification (KYC/KYB) of the subject, carried as the signed
-	// `verifier` claim. Empty asserts registration only.
+	// `verifier` claim. Required.
 	Verifier goblnet.Address
 }
 
@@ -130,12 +130,11 @@ func (d *Identity) CounterSign(env *gobl.Envelope, opts CounterSignOptions) erro
 	if opts.Key == "" {
 		return errors.New("identity: cannot countersign without a subject key")
 	}
-	signOpts := []head.SignOption{
+	if opts.Verifier == "" {
+		return errors.New("identity: cannot countersign without a verifier")
+	}
+	return goblnet.Sign(env, d.model.PrivateKey, d.Address(), opts.Subject,
 		head.WithExpiration(time.Now().Add(endorsementTTL)),
 		head.WithConfirmation(opts.Key),
-	}
-	if opts.Verifier != "" {
-		signOpts = append(signOpts, head.WithVerifier(opts.Verifier.String()))
-	}
-	return goblnet.Sign(env, d.model.PrivateKey, d.Address(), opts.Subject, signOpts...)
+		head.WithVerifier(opts.Verifier.String()))
 }
