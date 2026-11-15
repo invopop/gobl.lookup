@@ -171,13 +171,35 @@ func (f *fixture) unverified(party *org.Party, keys ...*dsig.PrivateKey) *gobl.E
 }
 
 // signRequest signs env from the subject to the lookup with each of
-// keys, publishing each key at the subject's address.
+// keys, publishing each key at the subject's address. With two keys,
+// the first names the second as its successor: a key change.
 func (f *fixture) signRequest(env *gobl.Envelope, keys ...*dsig.PrivateKey) {
 	f.t.Helper()
-	for _, k := range keys {
+	for i, k := range keys {
 		f.publish(k)
-		require.NoError(f.t, goblnet.Sign(env, k, f.subAddr, f.lookup.Address()))
+		var opts []head.SignOption
+		if i == 0 && len(keys) == 2 {
+			opts = append(opts, head.WithConfirmation(keys[1].JKT()))
+		}
+		require.NoError(f.t, goblnet.Sign(env, k, f.subAddr, f.lookup.Address(), opts...))
 	}
+}
+
+// signRequestAt adds a confirming signature by key from the subject to
+// the lookup made at iat, naming successor if not nil.
+func (f *fixture) signRequestAt(env *gobl.Envelope, key *dsig.PrivateKey, iat time.Time, successor *dsig.PrivateKey) {
+	f.t.Helper()
+	f.publish(key)
+	p := &head.SigningPayload{
+		UUID: env.Head.UUID, Digest: env.Head.Digest,
+		Iss: f.subAddr.String(), Aud: f.lookup.Address().String(), IssuedAt: iat.Unix(),
+	}
+	if successor != nil {
+		p.Confirmation = &head.Confirmation{JKT: successor.JKT()}
+	}
+	sig, err := dsig.NewSignature(key, p)
+	require.NoError(f.t, err)
+	env.Signatures = append(env.Signatures, sig)
 }
 
 // publish serves key at the subject's key endpoint.
@@ -461,6 +483,37 @@ func TestKeyLineage(t *testing.T) {
 		// A key bound before cannot become current again.
 		assert.Equal(t, http.StatusUnprocessableEntity, f.register(f.renewal(third, f.subject)))
 		assert.Equal(t, third.JKT(), f.record().CurrentKey().JKT)
+	})
+
+	t.Run("a replayed request cannot change the key", func(t *testing.T) {
+		// A new holder of the address replays an earlier signature by
+		// the current key and adds its own.
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.register(f.request(f.party(), f.subject)))
+		env := f.renewal()
+		f.signRequestAt(env, f.subject, time.Now().Add(-time.Hour), nil)
+		attacker := dsig.NewES256Key()
+		f.signRequest(env, attacker)
+		assert.Equal(t, http.StatusForbidden, f.register(env), "the attacker's key alone is unverified")
+		assert.Equal(t, f.subject.JKT(), f.record().CurrentKey().JKT)
+		require.Len(t, f.record().Lineage, 1)
+	})
+
+	t.Run("a request signed only long ago is rejected", func(t *testing.T) {
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.register(f.request(f.party(), f.subject)))
+		env := f.renewal()
+		f.signRequestAt(env, f.subject, time.Now().Add(-goblnet.MaxRequestAge-time.Minute), nil)
+		assert.Equal(t, http.StatusUnauthorized, f.register(env))
+	})
+
+	t.Run("a key change the current key does not name is rejected", func(t *testing.T) {
+		f := newFixture(t)
+		require.Equal(t, http.StatusAccepted, f.register(f.request(f.party(), f.subject)))
+		env := f.renewal(f.subject)
+		f.signRequest(env, dsig.NewES256Key())
+		assert.Equal(t, http.StatusUnprocessableEntity, f.register(env))
+		require.Len(t, f.record().Lineage, 1)
 	})
 
 	t.Run("a new key alone needs a new verification", func(t *testing.T) {

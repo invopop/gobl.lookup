@@ -5,20 +5,24 @@ import (
 	"time"
 
 	"github.com/invopop/gobl/dsig"
+	goblnet "github.com/invopop/gobl/net"
 
 	"github.com/invopop/gobl.lookup/internal/domain/models"
 )
 
 // errLineage is returned when a registration request's keys cannot
 // extend or start a lineage.
-var errLineage = errors.New("registration must be signed with the current key, a new key, or both")
+var errLineage = errors.New("registration must be signed with the current key, a new key, " +
+	"or the current key naming a new one with cnf")
 
-// nextLineage applies the keys confirming a registration request to
-// the current lineage (spec §7.3) and returns the resulting one, whose
-// last key is bound. verified holds the cnf thumbprints of accepted
-// verification countersignatures on the request, which order the keys
-// of a first registration signed with two.
-func nextLineage(lineage []*models.LineageKey, keys []*dsig.PublicKey, verified []string, now time.Time) ([]*models.LineageKey, error) {
+// nextLineage applies the signatures confirming a registration request
+// to the current lineage (spec §7.3) and returns the resulting one,
+// whose last key is bound. In a key change the current key's signature
+// must name the new key as its successor. verified holds the cnf
+// thumbprints of accepted verification countersignatures on the
+// request, which pick the current key of a first registration signed
+// with two.
+func nextLineage(lineage []*models.LineageKey, confs []*goblnet.ConfirmingSignature, verified []string, now time.Time) ([]*models.LineageKey, error) {
 	entry := func(k *dsig.PublicKey) *models.LineageKey {
 		return &models.LineageKey{JKT: k.JKT(), KID: k.ID(), AddedAt: now}
 	}
@@ -26,9 +30,9 @@ func nextLineage(lineage []*models.LineageKey, keys []*dsig.PublicKey, verified 
 	if len(lineage) > 0 {
 		current = lineage[len(lineage)-1].JKT
 	}
-	switch len(keys) {
+	switch len(confs) {
 	case 1:
-		k := keys[0]
+		k := confs[0].Key
 		if k.JKT() == current {
 			return lineage, nil // renewal
 		}
@@ -36,23 +40,23 @@ func nextLineage(lineage []*models.LineageKey, keys []*dsig.PublicKey, verified 
 		// a lost key or a new holder of the address starts afresh.
 		return []*models.LineageKey{entry(k)}, nil
 	case 2:
-		a, b := keys[0], keys[1]
-		if current != "" {
-			// The other key must be new: a key bound before cannot
-			// become current again.
-			switch {
-			case current == a.JKT() && !inLineage(lineage, b.JKT()):
-				return append(lineage, entry(b)), nil
-			case current == b.JKT() && !inLineage(lineage, a.JKT()):
-				return append(lineage, entry(a)), nil
+		// from is the key changed from, to the one it names.
+		for _, pair := range [][2]*goblnet.ConfirmingSignature{{confs[0], confs[1]}, {confs[1], confs[0]}} {
+			from, to := pair[0], pair[1]
+			if from.Successor != to.Key.JKT() {
+				continue
 			}
-			return nil, errLineage
-		}
-		switch {
-		case contains(verified, a.JKT()) && !contains(verified, b.JKT()):
-			return []*models.LineageKey{entry(a), entry(b)}, nil
-		case contains(verified, b.JKT()) && !contains(verified, a.JKT()):
-			return []*models.LineageKey{entry(b), entry(a)}, nil
+			if current != "" {
+				// The new key must be new: a key bound before cannot
+				// become current again.
+				if from.Key.JKT() == current && !inLineage(lineage, to.Key.JKT()) {
+					return append(lineage, entry(to.Key)), nil
+				}
+				continue
+			}
+			if contains(verified, from.Key.JKT()) && !contains(verified, to.Key.JKT()) {
+				return []*models.LineageKey{entry(from.Key), entry(to.Key)}, nil
+			}
 		}
 		return nil, errLineage
 	}

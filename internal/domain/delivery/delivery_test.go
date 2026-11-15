@@ -123,6 +123,16 @@ func TestIsPublicIP(t *testing.T) {
 		"169.254.169.254": false,
 		"0.0.0.0":         false,
 		"224.0.0.1":       false,
+		"100.64.0.1":      false,
+		"192.0.2.1":       false,
+		"198.51.100.1":    false,
+		"203.0.113.1":     false,
+		"198.18.0.1":      false,
+		"240.0.0.1":       false,
+		"2001:db8::1":     false,
+		"64:ff9b::a00:1":  false,
+		"2002:a00:1::1":   false,
+		"2a00:1450::1":    true,
 	}
 	for ip, want := range cases {
 		t.Run(ip, func(t *testing.T) {
@@ -181,10 +191,34 @@ func TestSendRetryableTaxonomy(t *testing.T) {
 		assert.True(t, errors.Is(err, ErrUnavailable))
 	})
 
+	t.Run("a redirect is a definitive rejection", func(t *testing.T) {
+		err := send(t, http.StatusTemporaryRedirect)
+		require.ErrorIs(t, err, ErrInboxRejected)
+		assert.ErrorContains(t, err, "redirects are not followed")
+	})
+
 	t.Run("4xx is a definitive rejection", func(t *testing.T) {
 		err := send(t, http.StatusUnauthorized)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrInboxRejected))
 		assert.False(t, errors.Is(err, ErrUnavailable))
 	})
+}
+
+func TestSenderFollowsNoRedirects(t *testing.T) {
+	var followed bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		followed = true
+	}))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+
+	resp, err := newSender(true).client.Post(srv.URL+net.InboxPath, "application/json", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	defer resp.Body.Close() //nolint:errcheck
+	assert.Equal(t, http.StatusTemporaryRedirect, resp.StatusCode)
+	assert.False(t, followed)
 }

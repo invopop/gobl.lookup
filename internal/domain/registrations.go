@@ -9,8 +9,8 @@ import (
 
 	"github.com/invopop/gobl"
 	"github.com/invopop/gobl/head"
-	"github.com/invopop/gobl/org"
 	goblnet "github.com/invopop/gobl/net"
+	"github.com/invopop/gobl/org"
 	"github.com/invopop/gobl/uuid"
 
 	"github.com/invopop/gobl.lookup/internal/domain/delivery"
@@ -79,7 +79,7 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 		return nil, ErrValidation.WithMessage("envelope failed validation: %s", err.Error())
 	}
 
-	keys, err := d.client.DeliveryKeys(ctx, env, d.identity.Address())
+	confs, err := d.client.DeliveryConfirmations(ctx, env, d.identity.Address())
 	if err != nil {
 		if errors.Is(err, goblnet.ErrUnavailable) {
 			d.log.Warn("inbox.rejected", "reason", "verify_unavailable", "error", err.Error())
@@ -91,6 +91,13 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	sender, err := goblnet.ParseAddress(env.Head.From.Opaque())
 	if err != nil {
 		return nil, ErrValidation.WithCause(err)
+	}
+	// Only fresh signatures count (spec §7.3): a replayed earlier
+	// request does not show that the sender holds its keys now.
+	confs = freshConfirmations(confs, time.Now())
+	if len(confs) == 0 {
+		d.log.Warn("inbox.rejected", "reason", "stale_request", "caller", string(sender))
+		return nil, ErrUnauthorized.WithMessage("registration requests must be signed within the last %s", goblnet.MaxRequestAge)
 	}
 	if _, ok := env.Extract().(*org.Party); !ok {
 		d.log.Warn("inbox.rejected", "reason", "not_a_party", "caller", string(sender))
@@ -130,9 +137,9 @@ func (d *Registrations) Register(ctx context.Context, env *gobl.Envelope) (*mode
 	if prev != nil {
 		lineage = prev.Lineage
 	}
-	lineage, err = nextLineage(lineage, keys, verificationKeys(verifications), time.Now().UTC())
+	lineage, err = nextLineage(lineage, confs, verificationKeys(verifications), time.Now().UTC())
 	if err != nil {
-		d.log.Warn("inbox.rejected", "reason", "lineage", "caller", string(sender), "keys", len(keys))
+		d.log.Warn("inbox.rejected", "reason", "lineage", "caller", string(sender), "keys", len(confs))
 		return nil, ErrValidation.WithMessage("%s", err.Error())
 	}
 	verifier := pickVerifier(verifications, lineage)
@@ -444,4 +451,21 @@ func (d *Registrations) deliverAsync(sender goblnet.Address, env *gobl.Envelope,
 			"error", err.Error(),
 		)
 	}
+}
+
+// requestClockSkew is the clock skew allowed on a request's signing
+// times (spec §6).
+const requestClockSkew = 30 * time.Second
+
+// freshConfirmations returns the confirming signatures made within
+// goblnet.MaxRequestAge of now.
+func freshConfirmations(confs []*goblnet.ConfirmingSignature, now time.Time) []*goblnet.ConfirmingSignature {
+	oldest := now.Add(-goblnet.MaxRequestAge - requestClockSkew)
+	var out []*goblnet.ConfirmingSignature
+	for _, c := range confs {
+		if !c.IssuedAt.Before(oldest) {
+			out = append(out, c)
+		}
+	}
+	return out
 }

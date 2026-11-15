@@ -5,12 +5,13 @@
 ### Changed
 
 - Registrations follow the latest GOBL Net spec. A request is an ordinary delivery from the subject to the lookup, confirmed by its signature for the lookup, and needs no request token; the subject is its `from` address. The lookup drops the request signature, countersigns with a `cnf` claim binding the subject's key, and addresses the envelope back to the subject.
-- The lookup keeps each address's key lineage (`Registration.Lineage`). A request signed with the current and a new key rolls over to the new key; one signed only with an unknown key starts a new lineage, and needs a verification for that key. Rollovers need no new verification, a key bound before cannot become current again, and a new holder of an address cannot inherit its verification.
+- The lookup keeps each address's key lineage (`Registration.Lineage`). A request signed with the current key, naming a new key with `cnf`, and with that new key rolls over to the new key; one signed only with an unknown key starts a new lineage, and needs a verification for that key. Rollovers need no new verification, a key bound before cannot become current again, and a new holder of an address cannot inherit its verification.
 - The lookup registers only verified parties: a registration needs a countersignature from an accepted verifier binding, with `cnf`, a key in the subject's lineage, and is rejected with `403` without one (`503` when the verifier's key cannot be fetched). The `gobl.lookup verify` command is removed; a subject registers again instead.
 - Verifiers are no longer accepted delivering to the lookup on a subject's behalf; the subject registers again with the verified envelope. The renewal rule based on an unchanged digest is replaced by the lineage check.
 - `GET /parties/<key>` returns a public record instead of the countersigned envelope: the party's address, verifier, verification and registration dates, plus its name and tax ID when listed. A registration request lists the party with header meta `lookup-listing: public` and unlists it with `private`; without the key the choice is kept, and new registrations start private. The key is removed before countersigning.
 - `GET /.well-known/gobl/who` answers with the lookup's party envelope addressed and signed for the requester, with `Vary: Authorization`.
-- Deliveries to subjects carry no request token.
+- Only signatures made within the last 5 minutes count towards a registration request, so an earlier request cannot be replayed (`401` when none is fresh).
+- Deliveries to subjects carry no request token, follow no redirects, and refuse every address that is not globally reachable, matching `gobl/net`.
 
 ## [v0.4.0] - 2026-07-30
 

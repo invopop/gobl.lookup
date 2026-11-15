@@ -1,8 +1,8 @@
 // Package delivery POSTs a signed envelope to a remote GOBL Net
 // inbox (e.g. the sender's own /.well-known/gobl/inbox) after the
-// lookup has countersigned it. The transport reuses gobl/net's
-// rules: HTTPS only, refuse to dial loopback / private / link-local
-// / multicast / unspecified addresses (SSRF defense). The check is
+// lookup has countersigned it. The transport follows gobl/net's
+// rules (spec §9): it refuses to dial addresses that are not globally
+// reachable (SSRF defense) and follows no redirects. The checks are
 // inlined here rather than imported from gobl/net (the helpers are
 // unexported there); the canonical implementation lives in
 // gobl/net/client.go.
@@ -58,8 +58,8 @@ type HTTPSender struct {
 }
 
 // New returns an HTTPSender whose transport refuses to dial any
-// resolved IP that is loopback, private, link-local, multicast, or
-// unspecified.
+// resolved IP that is not globally reachable (see isPublicIP) and
+// follows no redirects.
 func New() *HTTPSender {
 	return newSender(false)
 }
@@ -82,7 +82,13 @@ func newSender(allowLoopback bool) *HTTPSender {
 		// No fixed Timeout: the per-request deadline comes from the
 		// caller's context (see Send), keeping it in step with the
 		// domain's delivery timeout.
-		client: &http.Client{Transport: transport},
+		client: &http.Client{
+			Transport: transport,
+			// A redirect could move the delivery to plain HTTP.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -117,6 +123,8 @@ func (s *HTTPSender) Send(ctx context.Context, addr net.Address, env *gobl.Envel
 	switch {
 	case resp.StatusCode == http.StatusAccepted:
 		return nil
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return fmt.Errorf("%w: HTTP %d from %s: redirects are not followed", ErrInboxRejected, resp.StatusCode, url)
 	case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 		return fmt.Errorf("%w: HTTP %d from %s", ErrUnavailable, resp.StatusCode, url)
 	default:
@@ -159,9 +167,11 @@ func safeDialContext(ctx context.Context, network, addr string) (stdnet.Conn, er
 	return nil, lastErr
 }
 
-// isPublicIP rejects any loopback, private (RFC 1918 / RFC 6598),
-// link-local, multicast, or unspecified IP. Mirrors the helper in
-// gobl/net/client.go.
+// isPublicIP reports whether ip is globally reachable: not loopback,
+// private, link-local, multicast or unspecified, and in none of the IANA
+// special-purpose ranges that are not globally reachable, nor in a
+// translation range (NAT64, 6to4, Teredo) that can reach them. Mirrors
+// the helper in gobl/net/client.go.
 func isPublicIP(ip stdnet.IP) bool {
 	if ip == nil {
 		return false
@@ -176,5 +186,43 @@ func isPublicIP(ip stdnet.IP) bool {
 		ip.IsMulticast():
 		return false
 	}
+	for _, n := range nonPublicNets {
+		if n.Contains(ip) {
+			return false
+		}
+	}
 	return true
 }
+
+// nonPublicNets lists the ranges the net.IP methods miss, from the IANA
+// IPv4 and IPv6 special-purpose address registries.
+var nonPublicNets = func() []*stdnet.IPNet {
+	cidrs := []string{
+		"0.0.0.0/8",       // this network (RFC 791)
+		"100.64.0.0/10",   // shared address space (RFC 6598)
+		"192.0.0.0/24",    // IETF protocol assignments (RFC 6890)
+		"192.0.2.0/24",    // documentation, TEST-NET-1 (RFC 5737)
+		"192.88.99.0/24",  // 6to4 relay anycast (RFC 7526)
+		"198.18.0.0/15",   // benchmarking (RFC 2544)
+		"198.51.100.0/24", // documentation, TEST-NET-2 (RFC 5737)
+		"203.0.113.0/24",  // documentation, TEST-NET-3 (RFC 5737)
+		"240.0.0.0/4",     // reserved, and broadcast (RFC 1112)
+		"64:ff9b::/96",    // NAT64 (RFC 6052)
+		"64:ff9b:1::/48",  // local-use NAT64 (RFC 8215)
+		"100::/64",        // discard-only (RFC 6666)
+		"2001::/23",       // IETF protocol assignments, including Teredo (RFC 2928)
+		"2001:db8::/32",   // documentation (RFC 3849)
+		"2002::/16",       // 6to4 (RFC 3056)
+		"3fff::/20",       // documentation (RFC 9637)
+		"5f00::/16",       // segment routing SIDs (RFC 9602)
+	}
+	nets := make([]*stdnet.IPNet, len(cidrs))
+	for i, c := range cidrs {
+		_, n, err := stdnet.ParseCIDR(c)
+		if err != nil {
+			panic(err)
+		}
+		nets[i] = n
+	}
+	return nets
+}()
