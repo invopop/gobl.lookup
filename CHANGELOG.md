@@ -11,7 +11,7 @@
 - `GET /parties/<key>` returns a public record instead of the countersigned envelope: the party's address, verifier, verification and registration dates, plus its name and tax ID when listed. A registration request lists the party with header meta `lookup-listing: public` and unlists it with `private`; without the key the choice is kept, and new registrations start private. The key is removed before countersigning.
 - `GET /.well-known/gobl/who` answers with the lookup's party envelope addressed and signed for the requester, with `Vary: Authorization`.
 - Only signatures made within the last 5 minutes count towards a registration request, so an earlier request cannot be replayed (`401` when none is fresh).
-- Deliveries to subjects carry no request token, follow no redirects, and refuse every address that is not globally reachable, matching `gobl/net`.
+- Deliveries to subjects carry no request token, follow no redirects, refuse every address that is not globally reachable, and give each resolved address but the last 2 seconds before trying the next, matching `gobl/net`.
 
 ## [v0.4.0] - 2026-07-30
 

@@ -28,6 +28,10 @@ import (
 // delivery timeout.
 const dialTimeout = 5 * time.Second
 
+// fallbackDialTimeout bounds a dial to a resolved address with others
+// left to try.
+const fallbackDialTimeout = 2 * time.Second
+
 // Errors returned by Send.
 var (
 	// ErrInboxRejected matches gobl/net's sentinel — the remote
@@ -152,9 +156,14 @@ func safeDialContext(ctx context.Context, network, addr string) (stdnet.Conn, er
 	// Dial the IPs we just vetted rather than re-resolving the host at
 	// connect time: a second resolution could return a different, private
 	// address and slip past the check (DNS rebinding / TOCTOU).
-	d := &stdnet.Dialer{Timeout: dialTimeout}
+	// Each address but the last gets fallbackDialTimeout, so one that
+	// drops packets does not hold up the next.
 	var lastErr error
-	for _, ip := range ips {
+	for i, ip := range ips {
+		d := &stdnet.Dialer{Timeout: dialTimeout}
+		if i < len(ips)-1 {
+			d.Timeout = fallbackDialTimeout
+		}
 		conn, err := d.DialContext(ctx, network, stdnet.JoinHostPort(ip.String(), port))
 		if err == nil {
 			return conn, nil
